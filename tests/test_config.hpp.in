@@ -1,0 +1,2 @@
+#pragma once
+#define CPPHTTP_CERTS_DIR "@SAFE_PROJECT_SOURCE_DIR@/certs"
