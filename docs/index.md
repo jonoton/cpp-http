@@ -4,7 +4,7 @@ layout: default
 
 # cpp-http
 
-`cpp-http` is a lightweight, high-performance, header-only C++ HTTP/1.1 server library. It is built on top of `cpp-tcpnet`, leveraging its asynchronous, non-blocking TCP engine and a multi-threaded worker pool with **session-affinity ordering** to parse and route HTTP requests concurrently without stalling the main application thread.
+`cpp-http` is a lightweight, high-performance, header-only C++17 HTTP/1.1 server and client library. It is built on top of `cpp-tcpnet`, leveraging its asynchronous, non-blocking TCP engine and a multi-threaded worker pool with **session-affinity ordering** to parse and route HTTP requests concurrently without stalling the main application thread.
 
 ### Key Features
 - **Built on cpp-tcpnet:** Leverages the robust multi-threaded networking foundation of `cpp-tcpnet` with session-affinity worker threads for guaranteed per-connection ordering.
