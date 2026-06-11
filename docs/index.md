@@ -15,6 +15,7 @@ layout: default
 - **Header Normalization & Multi-Headers:** Built-in case-insensitive header matching and multi-header mapping (e.g. for multiple `Set-Cookie` entries).
 - **Query Parameter & URL Percent Decoding:** Automatically decodes and parses query variables and route parameters.
 - **Middleware Pipeline:** Chain processing logic before handlers run to validate or modify requests.
+- **CORS Middleware:** Built-in configurable Cross-Origin Resource Sharing (CORS) middleware to manage preflight requests and response headers.
 - **Rate Limiting Middleware:** Built-in IP-based rate limiting with sliding time windows and automatic `Retry-After` headers.
 - **Response Caching Wrapper:** Lightweight route handler caching for `GET` requests with configurable cache duration.
 - **HTTP Client Redirect Handling:** Client supports automatic redirect following with standard POST-to-GET method downgrade.

@@ -14,6 +14,7 @@
 - **Header Normalization & Multi-Headers:** Built-in case-insensitive header matching and multi-header mapping (e.g. for multiple `Set-Cookie` entries).
 - **Query Parameter Normalization:** Automatic URL percent decoding and query parameter parsing.
 - **Middleware Pipeline:** Chaining pre-routing hooks to inspect/modify requests or short-circuit responses.
+- **CORS Middleware:** Built-in configurable Cross-Origin Resource Sharing (CORS) middleware to manage preflight requests and response headers.
 - **Rate Limiting:** Built-in IP-based rate limiting middleware with sliding window duration and automatic `Retry-After` headers.
 - **Response Caching:** Lightweight cache wrapper for `GET` route handlers with configurable cache duration and query parameter normalization.
 - **Reliability & DoS Protection:** Exception-safe parsing, configurable max header block limits, and strict payload/body size limitations.

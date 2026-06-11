@@ -32,8 +32,8 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 0;
-constexpr int VERSION_PATCH = 1;
+constexpr int VERSION_MINOR = 1;
+constexpr int VERSION_PATCH = 0;
 
 /**
  * @brief Returns the library version as a string.
@@ -1134,6 +1134,82 @@ inline std::string GetMimeType(const std::string &filepath) {
     return "application/pdf";
   return "application/octet-stream";
 }
+
+/**
+ * @brief Configuration options for CORS middleware.
+ */
+struct CorsConfig {
+  std::string allow_origin = "*";
+  std::vector<std::string> allow_methods = {"GET",     "POST",  "PUT", "DELETE",
+                                            "OPTIONS", "PATCH", "HEAD"};
+  std::vector<std::string> allow_headers = {"*"};
+  std::vector<std::string> expose_headers = {};
+  bool allow_credentials = false;
+  std::chrono::seconds max_age = std::chrono::seconds(86400); // 24 hours
+};
+
+/**
+ * @brief CORS middleware for handling Cross-Origin Resource Sharing.
+ */
+class Cors {
+public:
+  Cors(CorsConfig config = CorsConfig()) : config_(std::move(config)) {}
+
+  bool operator()(HttpRequest &req, HttpResponse &res) {
+    // Set Access-Control-Allow-Origin
+    res.headers["Access-Control-Allow-Origin"] = config_.allow_origin;
+
+    // Set Access-Control-Allow-Credentials if enabled
+    if (config_.allow_credentials) {
+      res.headers["Access-Control-Allow-Credentials"] = "true";
+    }
+
+    // Set Access-Control-Expose-Headers if any
+    if (!config_.expose_headers.empty()) {
+      res.headers["Access-Control-Expose-Headers"] =
+          join(config_.expose_headers, ", ");
+    }
+
+    // Handle preflight requests
+    if (req.method == "OPTIONS") {
+      if (!config_.allow_methods.empty()) {
+        res.headers["Access-Control-Allow-Methods"] =
+            join(config_.allow_methods, ", ");
+      }
+      if (!config_.allow_headers.empty()) {
+        res.headers["Access-Control-Allow-Headers"] =
+            join(config_.allow_headers, ", ");
+      }
+      if (config_.max_age.count() > 0) {
+        res.headers["Access-Control-Max-Age"] =
+            std::to_string(config_.max_age.count());
+      }
+
+      // Stop further processing for preflight requests and return 204 No
+      // Content
+      res.status_code = 204;
+      res.status_message = "No Content";
+      return false;
+    }
+
+    // Continue processing for actual requests
+    return true;
+  }
+
+private:
+  CorsConfig config_;
+
+  static std::string join(const std::vector<std::string> &vec,
+                          const std::string &delim) {
+    if (vec.empty())
+      return "";
+    std::string result = vec[0];
+    for (size_t i = 1; i < vec.size(); ++i) {
+      result += delim + vec[i];
+    }
+    return result;
+  }
+};
 
 /**
  * @brief RateLimiter middleware to limit requests per IP address.

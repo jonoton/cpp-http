@@ -153,6 +153,38 @@ int main() {
 }
 ```
 
+### 4. CORS Middleware
+
+`cpp-http` provides a built-in configurable `Cors` middleware class to handle Cross-Origin Resource Sharing (CORS).
+
+It automatically intercepts preflight `OPTIONS` requests and returns a `204 No Content` response with the appropriate `Access-Control-Allow-*` headers. For actual requests, it injects the necessary CORS headers into the final response.
+
+```cpp
+#include "cpphttp.hpp"
+
+int main() {
+    cpphttp::HttpServer server(8080);
+
+    // Configure CORS settings
+    cpphttp::CorsConfig cors_config;
+    cors_config.allow_origin = "https://example.com";
+    cors_config.allow_credentials = true;
+    cors_config.expose_headers = {"X-Custom-Header"};
+    
+    // 1. Global CORS (applies to all routes)
+    // server.Use(cpphttp::Cors(cors_config));
+
+    // 2. Scoped CORS (applies only to paths starting with "/api")
+    server.Use("/api", cpphttp::Cors(cors_config));
+
+    server.Get("/api/data", [](const cpphttp::HttpRequest& req) {
+        return cpphttp::HttpResponse::Plain("Data with CORS");
+    });
+
+    server.Start();
+}
+```
+
 ## TCP Defragmentation & Pipelining
 
 In TCP connections, data packets can arrive fragmented (broken into multiple chunks) or coalesced (multiple requests sent sequentially in one TCP stream, known as HTTP pipelining). `cpp-http` handles both scenarios automatically:

@@ -2823,5 +2823,115 @@ TEST(HttpStreamingTest, HttpClientDestructorCancellation) {
     server.Stop();
 }
 
+TEST(HttpIntegrationTest, CorsMiddleware) {
+    cpphttp::HttpServer server(8155);
 
+    cpphttp::CorsConfig cors_config;
+    cors_config.allow_origin = "https://example.com";
+    cors_config.allow_credentials = true;
+    cors_config.expose_headers = {"X-Custom-Header"};
+    
+    server.Use(cpphttp::Cors(cors_config));
 
+    server.Get("/cors-test", [&](const cpphttp::HttpRequest &req) {
+        auto res = cpphttp::HttpResponse::Plain("CORS OK");
+        res.headers["X-Custom-Header"] = "foo";
+        return res;
+    });
+
+    server.Start();
+
+    cpphttp::HttpClient client("127.0.0.1", 8155);
+
+    // Test Preflight
+    try {
+        std::unordered_map<std::string, std::string> headers;
+        auto res = client.SendRequest("OPTIONS", "/cors-test", "", headers);
+        EXPECT_EQ(res.status_code, 204);
+        EXPECT_EQ(res.headers.at("Access-Control-Allow-Origin"), "https://example.com");
+        EXPECT_EQ(res.headers.at("Access-Control-Allow-Credentials"), "true");
+        EXPECT_NE(res.headers.at("Access-Control-Allow-Methods").find("GET"), std::string::npos);
+        EXPECT_EQ(res.headers.at("Access-Control-Max-Age"), "86400");
+    } catch (const std::exception &e) {
+        FAIL() << "OPTIONS Request failed: " << e.what();
+    }
+
+    // Test Actual Request
+    try {
+        auto res = client.Get("/cors-test");
+        EXPECT_EQ(res.status_code, 200);
+        EXPECT_EQ(res.headers.at("Access-Control-Allow-Origin"), "https://example.com");
+        EXPECT_EQ(res.headers.at("Access-Control-Allow-Credentials"), "true");
+        EXPECT_EQ(res.headers.at("Access-Control-Expose-Headers"), "X-Custom-Header");
+        EXPECT_EQ(res.body, "CORS OK");
+    } catch (const std::exception &e) {
+        FAIL() << "GET Request failed: " << e.what();
+    }
+
+    server.Stop();
+}
+
+TEST(HttpIntegrationTest, CorsMiddlewareScoped) {
+    cpphttp::HttpServer server(8156);
+
+    cpphttp::CorsConfig cors_config;
+    cors_config.allow_origin = "https://specific-endpoint.com";
+    
+    // Apply CORS only to the /api prefix
+    server.Use("/api", cpphttp::Cors(cors_config));
+
+    server.Get("/api/data", [&](const cpphttp::HttpRequest &req) {
+        return cpphttp::HttpResponse::Plain("API Data");
+    });
+
+    server.Get("/public/data", [&](const cpphttp::HttpRequest &req) {
+        return cpphttp::HttpResponse::Plain("Public Data");
+    });
+
+    server.Start();
+
+    cpphttp::HttpClient client("127.0.0.1", 8156);
+
+    // Test Scoped Endpoint (Preflight)
+    try {
+        std::unordered_map<std::string, std::string> headers;
+        auto res = client.SendRequest("OPTIONS", "/api/data", "", headers);
+        EXPECT_EQ(res.status_code, 204);
+        EXPECT_EQ(res.headers.at("Access-Control-Allow-Origin"), "https://specific-endpoint.com");
+    } catch (const std::exception &e) {
+        FAIL() << "Scoped OPTIONS Request failed: " << e.what();
+    }
+
+    // Test Scoped Endpoint (Actual Request)
+    try {
+        auto res = client.Get("/api/data");
+        EXPECT_EQ(res.status_code, 200);
+        EXPECT_EQ(res.headers.at("Access-Control-Allow-Origin"), "https://specific-endpoint.com");
+        EXPECT_EQ(res.body, "API Data");
+    } catch (const std::exception &e) {
+        FAIL() << "Scoped GET Request failed: " << e.what();
+    }
+
+    // Test Unscoped Endpoint (Preflight) -> should fail (method not allowed / handled by default)
+    try {
+        std::unordered_map<std::string, std::string> headers;
+        auto res = client.SendRequest("OPTIONS", "/public/data", "", headers);
+        // Since no route handles OPTIONS for /public/data and no middleware intercepts it, it will return 405 Method Not Allowed or 404
+        EXPECT_EQ(res.headers.count("Access-Control-Allow-Origin"), 0);
+        EXPECT_NE(res.status_code, 204);
+    } catch (const std::exception &e) {
+        FAIL() << "Unscoped OPTIONS Request failed: " << e.what();
+    }
+
+    // Test Unscoped Endpoint (Actual Request)
+    try {
+        auto res = client.Get("/public/data");
+        EXPECT_EQ(res.status_code, 200);
+        EXPECT_EQ(res.headers.count("Access-Control-Allow-Origin"), 0);
+        EXPECT_EQ(res.body, "Public Data");
+    } catch (const std::exception &e) {
+        FAIL() << "Unscoped GET Request failed: " << e.what();
+    }
+
+    server.Stop();
+}
