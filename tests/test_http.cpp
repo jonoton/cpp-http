@@ -2518,6 +2518,86 @@ TEST(HttpIntegrationTest, StaticDirTest) {
     fs::remove_all(temp_dir);
 }
 
+TEST(HttpIntegrationTest, StaticDirRangeRequestTest) {
+    namespace fs = std::filesystem;
+    auto temp_dir = fs::temp_directory_path() / ("cpphttp_static_range_test_" + std::to_string(std::random_device{}()));
+    fs::create_directories(temp_dir);
+
+    // Create test file with 26 bytes of alphabet
+    std::string test_data = "abcdefghijklmnopqrstuvwxyz";
+    {
+        std::ofstream out(temp_dir / "alphabet.txt");
+        out << test_data;
+    }
+
+    cpphttp::HttpServer server(8148);
+    server.StaticDir("/static", temp_dir.string());
+    server.Start();
+
+    cpphttp::HttpClient client("127.0.0.1", 8148);
+
+    // 1. Partial Range Request: bytes=0-4 (5 bytes: "abcde")
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=0-4"}});
+        EXPECT_EQ(res.status_code, 206);
+        EXPECT_EQ(res.body, "abcde");
+        EXPECT_EQ(res.headers.at("Content-Length"), "5");
+        EXPECT_EQ(res.headers.at("Content-Range"), "bytes 0-4/26");
+        EXPECT_EQ(res.headers.at("Accept-Ranges"), "bytes");
+    }
+
+    // 2. Partial Range Request: bytes=10-15 (6 bytes: "klmnop")
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=10-15"}});
+        EXPECT_EQ(res.status_code, 206);
+        EXPECT_EQ(res.body, "klmnop");
+        EXPECT_EQ(res.headers.at("Content-Length"), "6");
+        EXPECT_EQ(res.headers.at("Content-Range"), "bytes 10-15/26");
+    }
+
+    // 3. Partial Range Request: bytes=20- (6 bytes: "uvwxyz")
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=20-"}});
+        EXPECT_EQ(res.status_code, 206);
+        EXPECT_EQ(res.body, "uvwxyz");
+        EXPECT_EQ(res.headers.at("Content-Length"), "6");
+        EXPECT_EQ(res.headers.at("Content-Range"), "bytes 20-25/26");
+    }
+
+    // 4. Partial Range Request: bytes=20-100 (6 bytes: "uvwxyz" - clipped to file_size - 1)
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=20-100"}});
+        EXPECT_EQ(res.status_code, 206);
+        EXPECT_EQ(res.body, "uvwxyz");
+        EXPECT_EQ(res.headers.at("Content-Length"), "6");
+        EXPECT_EQ(res.headers.at("Content-Range"), "bytes 20-25/26");
+    }
+
+    // 5. Invalid Range Request: bytes=30-40 (Out of bounds) -> 416
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=30-40"}});
+        EXPECT_EQ(res.status_code, 416);
+        EXPECT_EQ(res.headers.at("Content-Range"), "bytes */26");
+    }
+
+    // 6. Malformed Range Request (falls back to 200 OK)
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=abc-10"}});
+        EXPECT_EQ(res.status_code, 200);
+        EXPECT_EQ(res.body, test_data);
+    }
+
+    // 7. Suffix/Prefix malformed Range Request (falls back to 416 since start > end)
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=10-5"}});
+        EXPECT_EQ(res.status_code, 416);
+    }
+
+    server.Stop();
+    fs::remove_all(temp_dir);
+}
+
+
 TEST(HttpIntegrationTest, StaticDirSpaModeTest) {
     namespace fs = std::filesystem;
     auto temp_dir = fs::temp_directory_path() / ("cpphttp_static_spa_test_" + std::to_string(std::random_device{}()));

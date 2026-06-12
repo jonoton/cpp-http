@@ -12,7 +12,7 @@ layout: default
 - **Asynchronous Event Loop:** Handles high numbers of concurrent client connections in the background with parallel throughput across connections.
 - **HTTP Streaming:** Server-side `AddStreamRoute` for incremental chunked-upload processing; client-side `GetStream`, `PostStream`, `PostStreamAsync`, and `PutStreamAsync` for streaming large payloads without buffering in memory.
 - **Dynamic Routing & Path Parameters:** Support route variables (e.g. `/users/:id`) and wildcards (e.g. `/static/*`).
-- **Static Files & SPA Support:** Serve local directories via `StaticDir` with automatic MIME-type mapping, directory indices, and Single Page Application (SPA) routing fallback.
+- **Static Files & SPA Support:** Serve local directories via `StaticDir` with automatic MIME-type mapping, directory indices, HTTP Range request support (`206 Partial Content` for video/audio seeking), and Single Page Application (SPA) routing fallback.
 - **Header Normalization & Multi-Headers:** Built-in case-insensitive header matching and multi-header mapping (e.g. for multiple `Set-Cookie` entries).
 - **Query Parameter & URL Percent Decoding:** Automatically decodes and parses query variables and route parameters.
 - **Middleware Pipeline:** Chain processing logic before handlers run to validate or modify requests.

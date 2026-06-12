@@ -32,7 +32,7 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 2;
+constexpr int VERSION_MINOR = 3;
 constexpr int VERSION_PATCH = 0;
 
 /**
@@ -920,6 +920,8 @@ struct HttpResponse {
 
   bool is_file = false;
   std::string file_path;
+  size_t file_offset = 0;
+  size_t file_length = 0;
 
   std::string GetHeader(const std::string &key) const {
     auto it = headers.find(key);
@@ -1422,6 +1424,7 @@ public:
     bool is_streaming_file = false;
     std::shared_ptr<std::ifstream> file_stream;
     size_t file_bytes_in_flight = 0;
+    size_t file_bytes_remaining = std::string::npos;
     bool should_close_after_file = false;
 
     bool header_parsed = false;
@@ -1587,13 +1590,61 @@ public:
       }
 
       HttpResponse res;
-      res.status_code = 200;
-      res.status_message = "OK";
+      size_t file_size = std::filesystem::file_size(canonical_filepath, ec);
+      size_t start = 0;
+      size_t end = file_size > 0 ? file_size - 1 : 0;
+      bool is_partial = false;
+
+      std::string range_header = req.GetHeader("Range");
+      if (!range_header.empty() && range_header.find("bytes=") == 0) {
+        std::string range_str = range_header.substr(6);
+        size_t dash_pos = range_str.find('-');
+        if (dash_pos != std::string::npos) {
+          std::string start_str = range_str.substr(0, dash_pos);
+          std::string end_str = range_str.substr(dash_pos + 1);
+
+          try {
+            if (!start_str.empty())
+              start = std::stoull(start_str);
+            if (!end_str.empty())
+              end = std::stoull(end_str);
+
+            if (start <= end && start < file_size) {
+              if (end >= file_size)
+                end = file_size - 1;
+              is_partial = true;
+            } else {
+              res.status_code = 416;
+              res.status_message = "Range Not Satisfiable";
+              res.headers["Content-Range"] =
+                  "bytes */" + std::to_string(file_size);
+              return res;
+            }
+          } catch (const std::exception &) {
+            // Ignore malformed range header and fall back to 200 OK
+          }
+        }
+      }
+
+      if (is_partial) {
+        res.status_code = 206;
+        res.status_message = "Partial Content";
+        res.file_offset = start;
+        res.file_length = end - start + 1;
+        res.headers["Content-Range"] = "bytes " + std::to_string(start) + "-" +
+                                       std::to_string(end) + "/" +
+                                       std::to_string(file_size);
+        res.headers["Content-Length"] = std::to_string(res.file_length);
+      } else {
+        res.status_code = 200;
+        res.status_message = "OK";
+        res.headers["Content-Length"] = std::to_string(file_size);
+      }
+
       res.is_file = true;
       res.file_path = canonical_filepath;
       res.headers["Content-Type"] = GetMimeType(canonical_filepath);
-      res.headers["Content-Length"] =
-          std::to_string(std::filesystem::file_size(canonical_filepath, ec));
+      res.headers["Accept-Ranges"] = "bytes";
       return res;
     });
   }
@@ -1801,13 +1852,24 @@ private:
 
     while (session->file_bytes_in_flight < max_flight &&
            *session->file_stream && running_) {
-      std::vector<char> stream_buffer(chunk_size);
+      size_t to_read = chunk_size;
+      if (session->file_bytes_remaining != std::string::npos &&
+          session->file_bytes_remaining < chunk_size) {
+        to_read = session->file_bytes_remaining;
+      }
+      if (to_read == 0)
+        break;
+
+      std::vector<char> stream_buffer(to_read);
       session->file_stream->read(stream_buffer.data(), stream_buffer.size());
       std::streamsize bytes_read = session->file_stream->gcount();
       if (bytes_read > 0) {
         std::string chunk(stream_buffer.data(), bytes_read);
         if (listener_->Send(session_id, chunk)) {
           session->file_bytes_in_flight += bytes_read;
+          if (session->file_bytes_remaining != std::string::npos) {
+            session->file_bytes_remaining -= bytes_read;
+          }
         } else {
           break;
         }
@@ -1817,7 +1879,7 @@ private:
     }
 
     if (!*session->file_stream || !session->file_stream->is_open() ||
-        session->file_stream->eof()) {
+        session->file_stream->eof() || session->file_bytes_remaining == 0) {
       if (session->file_bytes_in_flight == 0) {
         session->is_streaming_file = false;
         session->file_stream.reset();
@@ -1917,6 +1979,12 @@ private:
             session->is_streaming_file = true;
             session->file_stream = std::make_shared<std::ifstream>(
                 handler_response->file_path, std::ios::binary);
+            if (handler_response->file_offset > 0) {
+              session->file_stream->seekg(handler_response->file_offset);
+            }
+            session->file_bytes_remaining = handler_response->file_length > 0
+                                                ? handler_response->file_length
+                                                : std::string::npos;
             session->file_bytes_in_flight = headers_data.size();
 
             std::string conn_header = session->request.GetHeader("Connection");
@@ -2405,10 +2473,14 @@ private:
         if (response.is_file) {
           file_size = std::filesystem::file_size(response.file_path, size_ec);
         }
-        size_t total_sent = response.is_file
-                                ? (headers_data.size() +
-                                   (request.method != "HEAD" ? file_size : 0))
-                                : response_data.size();
+        size_t total_sent =
+            response.is_file
+                ? (headers_data.size() +
+                   (request.method != "HEAD"
+                        ? (response.file_length > 0 ? response.file_length
+                                                    : file_size)
+                        : 0))
+                : response_data.size();
 
         if (should_close && !upgrade_to_ws) {
           std::lock_guard<std::mutex> lock(close_mutex_);
@@ -2422,6 +2494,12 @@ private:
             session->is_streaming_file = true;
             session->file_stream = std::make_shared<std::ifstream>(
                 response.file_path, std::ios::binary);
+            if (response.file_offset > 0) {
+              session->file_stream->seekg(response.file_offset);
+            }
+            session->file_bytes_remaining = response.file_length > 0
+                                                ? response.file_length
+                                                : std::string::npos;
             session->file_bytes_in_flight = headers_data.size();
             session->should_close_after_file = should_close && !upgrade_to_ws;
             PumpFileTransfer(session_id, session);

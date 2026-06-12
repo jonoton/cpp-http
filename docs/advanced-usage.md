@@ -395,6 +395,8 @@ int main() {
 - **Directory Index Serving:** Requests attempting to load a directory will automatically serve the `index.html` within that directory if it exists.
 - **Single Page Application (SPA) Fallback:** By enabling the `spa_mode` flag, requests to virtual routes that don't match any static file will automatically serve the root `index.html`. This ensures that your client-side JavaScript router takes control for unhandled backend paths.
 - **Compression & HEAD Support:** Static files automatically benefit from standard features like transparent Gzip compression and automatic `HEAD` method fallback.
+- **HTTP Range Requests (Progressive Loading):** Supports standard `Range` headers (e.g. `bytes=START-END` or `bytes=START-`). It responds with `206 Partial Content` and serves only the requested sub-range, along with `Content-Range`, `Content-Length`, and `Accept-Ranges: bytes` headers. This allows media players to progressively stream and seek through video or audio files directly from the static directory. If the requested range is out-of-bounds, the server returns `416 Range Not Satisfiable`.
+
 
 ## Response Caching
 
