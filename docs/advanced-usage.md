@@ -362,11 +362,12 @@ server.Post("/upload", [](const cpphttp::HttpRequest& request) {
 `cpp-http` provides a convenient built-in mechanism to serve an entire directory of static files using `HttpServer::StaticDir`:
 
 ```cpp
-server.StaticDir(const std::string &route_prefix, const std::string &directory_path);
+server.StaticDir(const std::string &route_prefix, const std::string &directory_path, bool spa_mode = false);
 ```
 
 - **`route_prefix`**: The HTTP route prefix under which static files will be served (e.g., `/static` or `/assets`).
 - **`directory_path`**: The local directory containing the static assets.
+- **`spa_mode`**: (Optional) If set to `true`, enables Single Page Application (SPA) fallback routing. Any request that does not match an existing file will automatically fall back to serving the `index.html` at the root of the `directory_path`.
 
 ### Example Usage
 
@@ -391,7 +392,8 @@ int main() {
 ### Features & Security
 - **Automatic MIME-type mapping:** The server automatically determines and sets the correct `Content-Type` header based on the file extension (supporting common formats like `.html`, `.css`, `.js`, `.json`, `.png`, `.jpg`/`.jpeg`, `.gif`, `.svg`, `.txt`, `.ico`, `.xml`, and `.pdf`).
 - **Path Traversal Protection:** The routing engine automatically sanitizes `.` and `..` path segments, ensuring clients cannot read files outside of the registered directory.
-- **Directory Access Prevention:** Requests attempting to load directories rather than files will automatically return a `404 Not Found` response.
+- **Directory Index Serving:** Requests attempting to load a directory will automatically serve the `index.html` within that directory if it exists.
+- **Single Page Application (SPA) Fallback:** By enabling the `spa_mode` flag, requests to virtual routes that don't match any static file will automatically serve the root `index.html`. This ensures that your client-side JavaScript router takes control for unhandled backend paths.
 - **Compression & HEAD Support:** Static files automatically benefit from standard features like transparent Gzip compression and automatic `HEAD` method fallback.
 
 ## Response Caching

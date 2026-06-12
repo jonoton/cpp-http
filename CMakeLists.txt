@@ -44,6 +44,9 @@ option(CPPHTTP_BUILD_EXAMPLES "Build the example programs" ${IS_TOP_LEVEL})
 if(CPPHTTP_BUILD_EXAMPLES)
     add_executable(http_example examples/main.cpp)
     target_link_libraries(http_example PRIVATE cpphttp::cpphttp)
+    
+    add_executable(spa_example examples/spa_example.cpp)
+    target_link_libraries(spa_example PRIVATE cpphttp::cpphttp)
 endif()
 
 option(CPPHTTP_BUILD_TESTS "Build the unit tests" ${IS_TOP_LEVEL})

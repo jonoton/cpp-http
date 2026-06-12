@@ -11,6 +11,7 @@
 - **Protocol Compliance:** Supports **Chunked Transfer Encoding** (requests/responses), keep-alive connection pipelining, and HTTP/1.0 EOF-delimited bodies.
 - **HTTP Streaming:** Server-side `AddStreamRoute` for incremental chunked-upload handling; client-side `GetStream`, `PostStream`, `PostStreamAsync`, and `PutStreamAsync` for streaming large request/response bodies without buffering the entire payload in memory.
 - **Dynamic Routing:** Pattern matching for route variables (e.g. `/users/:id/profile`) and wildcards (e.g. `/assets/*`).
+- **Static Files & SPA Support:** Serve local directories via `StaticDir` with automatic MIME-type mapping, directory indices, and Single Page Application (SPA) routing fallback.
 - **Header Normalization & Multi-Headers:** Built-in case-insensitive header matching and multi-header mapping (e.g. for multiple `Set-Cookie` entries).
 - **Query Parameter Normalization:** Automatic URL percent decoding and query parameter parsing.
 - **Middleware Pipeline:** Chaining pre-routing hooks to inspect/modify requests or short-circuit responses.

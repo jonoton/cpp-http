@@ -2457,13 +2457,19 @@ TEST(HttpIntegrationTest, StaticDirTest) {
     auto res_404 = client.SendRequest("GET", "/static/nonexistent.html");
     EXPECT_EQ(res_404.status_code, 404);
 
-    // 6. GET directory itself should return 404
+    // 6. GET directory itself should return 404 (nested has no index.html)
     auto res_dir = client.SendRequest("GET", "/static/nested/");
     EXPECT_EQ(res_dir.status_code, 404);
 
-    // 7. GET root directory itself should return 404
+    // 7. GET root directory itself should return 200 with index.html
     auto res_root_dir = client.SendRequest("GET", "/static");
-    EXPECT_EQ(res_root_dir.status_code, 404);
+    EXPECT_EQ(res_root_dir.status_code, 200);
+    EXPECT_EQ(res_root_dir.body, "<html><body>Hello HTML</body></html>");
+
+    // 7.b GET root directory with trailing slash
+    auto res_root_dir_slash = client.SendRequest("GET", "/static/");
+    EXPECT_EQ(res_root_dir_slash.status_code, 200);
+    EXPECT_EQ(res_root_dir_slash.body, "<html><body>Hello HTML</body></html>");
 
     // 8. HEAD request should be handled, returning correct headers but empty body
     auto res_head = client.SendRequest("HEAD", "/static/index.html", "", cpphttp::HeaderMap{{"Accept-Encoding", "identity"}});
@@ -2509,6 +2515,57 @@ TEST(HttpIntegrationTest, StaticDirTest) {
     server.Stop();
 
     // Cleanup
+    fs::remove_all(temp_dir);
+}
+
+TEST(HttpIntegrationTest, StaticDirSpaModeTest) {
+    namespace fs = std::filesystem;
+    auto temp_dir = fs::temp_directory_path() / ("cpphttp_static_spa_test_" + std::to_string(std::random_device{}()));
+    fs::create_directories(temp_dir);
+
+    // Create test files
+    {
+        std::ofstream out(temp_dir / "index.html");
+        out << "<html><body>SPA Root</body></html>";
+    }
+    {
+        std::ofstream out(temp_dir / "style.css");
+        out << "body { color: red; }";
+    }
+
+    cpphttp::HttpServer server(8199);
+    server.StaticDir("/app", temp_dir.string(), true);
+    server.Start();
+
+    cpphttp::HttpClient client("127.0.0.1", 8199);
+
+    // 1. GET existing file
+    auto res_css = client.SendRequest("GET", "/app/style.css");
+    EXPECT_EQ(res_css.status_code, 200);
+    EXPECT_EQ(res_css.body, "body { color: red; }");
+
+    // 2. GET unknown file (should fallback to index.html)
+    auto res_unknown = client.SendRequest("GET", "/app/unknown.html");
+    EXPECT_EQ(res_unknown.status_code, 200);
+    EXPECT_EQ(res_unknown.body, "<html><body>SPA Root</body></html>");
+    EXPECT_EQ(res_unknown.headers.at("Content-Type"), "text/html");
+
+    // 3. GET unknown sub-route (should fallback to index.html)
+    auto res_sub = client.SendRequest("GET", "/app/users/123");
+    EXPECT_EQ(res_sub.status_code, 200);
+    EXPECT_EQ(res_sub.body, "<html><body>SPA Root</body></html>");
+
+    // 4. GET root directory
+    auto res_root = client.SendRequest("GET", "/app/");
+    EXPECT_EQ(res_root.status_code, 200);
+    EXPECT_EQ(res_root.body, "<html><body>SPA Root</body></html>");
+
+    // 5. POST unknown route (should fallback to index.html as well for SPA, or maybe 404?)
+    // Note: Our StaticDir is registered as GET only, so POST should fail with 404
+    auto res_post = client.SendRequest("POST", "/app/users");
+    EXPECT_EQ(res_post.status_code, 404);
+
+    server.Stop();
     fs::remove_all(temp_dir);
 }
 

@@ -32,7 +32,7 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 1;
+constexpr int VERSION_MINOR = 2;
 constexpr int VERSION_PATCH = 0;
 
 /**
@@ -1515,7 +1515,7 @@ public:
   }
 
   void StaticDir(const std::string &route_prefix,
-                 const std::string &directory_path) {
+                 const std::string &directory_path, bool spa_mode = false) {
     std::string route = route_prefix;
     if (!route.empty() && route.back() != '/') {
       route += "/";
@@ -1527,7 +1527,7 @@ public:
       dir.pop_back();
     }
 
-    Get(route, [dir](const HttpRequest &req) {
+    Get(route, [dir, spa_mode](const HttpRequest &req) {
       std::string filepath = dir + "/" + req.path_params.at("*");
 
       std::error_code ec;
@@ -1536,23 +1536,53 @@ public:
       std::string canonical_filepath =
           std::filesystem::weakly_canonical(filepath, ec).string();
 
+      auto handle_fallback = [&]() -> HttpResponse {
+        if (spa_mode) {
+          std::string spa_root_index = dir + "/index.html";
+          std::string canonical_spa_root =
+              std::filesystem::weakly_canonical(spa_root_index, ec).string();
+          std::ifstream file(canonical_spa_root, std::ios::binary);
+          if (file.is_open()) {
+            HttpResponse res;
+            res.status_code = 200;
+            res.status_message = "OK";
+            res.is_file = true;
+            res.file_path = canonical_spa_root;
+            res.headers["Content-Type"] = "text/html";
+            res.headers["Content-Length"] = std::to_string(
+                std::filesystem::file_size(canonical_spa_root, ec));
+            return res;
+          }
+        }
+        return HttpResponse::Plain("Not Found", 404);
+      };
+
       // Path traversal check
       if (canonical_filepath.rfind(canonical_dir, 0) != 0 ||
           (canonical_filepath.size() > canonical_dir.size() &&
            canonical_dir.back() != '/' &&
            canonical_filepath[canonical_dir.size()] != '/')) {
-        return HttpResponse::Plain("Not Found", 404);
+        return handle_fallback();
       }
 
       if (std::filesystem::is_directory(canonical_filepath, ec)) {
-        return HttpResponse::Plain("Not Found", 404);
+        // Look for index.html in the directory
+        std::string index_path = canonical_filepath + "/index.html";
+        std::string canonical_index =
+            std::filesystem::weakly_canonical(index_path, ec).string();
+        std::ifstream file(canonical_index, std::ios::binary);
+        if (file.is_open()) {
+          canonical_filepath = canonical_index;
+        } else {
+          return handle_fallback();
+        }
       }
 
       // Check if file exists and can be opened
       {
         std::ifstream file(canonical_filepath, std::ios::binary);
         if (!file.is_open()) {
-          return HttpResponse::Plain("Not Found", 404);
+          return handle_fallback();
         }
       }
 
