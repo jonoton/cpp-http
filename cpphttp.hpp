@@ -33,7 +33,7 @@ namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
 constexpr int VERSION_MINOR = 3;
-constexpr int VERSION_PATCH = 0;
+constexpr int VERSION_PATCH = 1;
 
 /**
  * @brief Returns the library version as a string.
@@ -1604,21 +1604,32 @@ public:
           std::string end_str = range_str.substr(dash_pos + 1);
 
           try {
-            if (!start_str.empty())
-              start = std::stoull(start_str);
-            if (!end_str.empty())
-              end = std::stoull(end_str);
-
-            if (start <= end && start < file_size) {
-              if (end >= file_size)
-                end = file_size - 1;
-              is_partial = true;
+            if (start_str.empty()) {
+              if (!end_str.empty()) {
+                size_t suffix_length = std::stoull(end_str);
+                if (suffix_length > 0) {
+                  start =
+                      suffix_length > file_size ? 0 : file_size - suffix_length;
+                  end = file_size > 0 ? file_size - 1 : 0;
+                  is_partial = true;
+                }
+              }
             } else {
-              res.status_code = 416;
-              res.status_message = "Range Not Satisfiable";
-              res.headers["Content-Range"] =
-                  "bytes */" + std::to_string(file_size);
-              return res;
+              start = std::stoull(start_str);
+              if (!end_str.empty())
+                end = std::stoull(end_str);
+
+              if (start <= end && start < file_size) {
+                if (end >= file_size)
+                  end = file_size - 1;
+                is_partial = true;
+              } else {
+                res.status_code = 416;
+                res.status_message = "Range Not Satisfiable";
+                res.headers["Content-Range"] =
+                    "bytes */" + std::to_string(file_size);
+                return res;
+              }
             }
           } catch (const std::exception &) {
             // Ignore malformed range header and fall back to 200 OK
@@ -1903,6 +1914,8 @@ private:
           buffer, session->chunk_parsed_up_to, session->partial_body,
           chunked_bad_request, max_body_size_, chunked_payload_too_large,
           [&](const std::string &chunk) {
+            if (handler_response)
+              return;
             if (auto res =
                     session->stream_handler(session->request, chunk, false)) {
               handler_response = res;
@@ -2960,7 +2973,7 @@ public:
     auto res_future = promise->get_future();
 
     HeaderMap h_map(headers.begin(), headers.end());
-    std::weak_ptr<bool> alive_weak = alive_;
+    std::weak_ptr<std::atomic<bool>> alive_weak = alive_;
 
     auto pool_future =
         pool_->Enqueue([this, alive_weak, promise, path, stream_provider,
@@ -3004,7 +3017,7 @@ public:
     auto res_future = promise->get_future();
 
     HeaderMap h_map(headers.begin(), headers.end());
-    std::weak_ptr<bool> alive_weak = alive_;
+    std::weak_ptr<std::atomic<bool>> alive_weak = alive_;
 
     auto pool_future =
         pool_->Enqueue([this, alive_weak, promise, path, stream_provider,
@@ -3047,7 +3060,7 @@ public:
     auto res_future = promise->get_future();
 
     HeaderMap h_map(headers.begin(), headers.end());
-    std::weak_ptr<bool> alive_weak = alive_;
+    std::weak_ptr<std::atomic<bool>> alive_weak = alive_;
 
     auto pool_future = pool_->Enqueue(
         [this, alive_weak, promise, method, path, body, h_map]() {
@@ -3100,7 +3113,8 @@ private:
     }
   };
 
-  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+  std::shared_ptr<std::atomic<bool>> alive_ =
+      std::make_shared<std::atomic<bool>>(true);
   std::shared_ptr<cppasyncworker::WorkerPool> pool_;
 
   std::string host_;

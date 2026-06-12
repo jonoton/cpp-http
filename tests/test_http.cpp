@@ -2593,6 +2593,31 @@ TEST(HttpIntegrationTest, StaticDirRangeRequestTest) {
         EXPECT_EQ(res.status_code, 416);
     }
 
+    // 8. Suffix Range Request: bytes=-5 (5 bytes: "vwxyz")
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=-5"}});
+        EXPECT_EQ(res.status_code, 206);
+        EXPECT_EQ(res.body, "vwxyz");
+        EXPECT_EQ(res.headers.at("Content-Length"), "5");
+        EXPECT_EQ(res.headers.at("Content-Range"), "bytes 21-25/26");
+    }
+
+    // 9. Suffix Range Request: bytes=-100 (clipped to file size -> 26 bytes: alphabet)
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=-100"}});
+        EXPECT_EQ(res.status_code, 206);
+        EXPECT_EQ(res.body, test_data);
+        EXPECT_EQ(res.headers.at("Content-Length"), "26");
+        EXPECT_EQ(res.headers.at("Content-Range"), "bytes 0-25/26");
+    }
+
+    // 10. Suffix Range Request with length 0: bytes=-0 (invalid suffix length, fallback to 200 OK)
+    {
+        auto res = client.SendRequest("GET", "/static/alphabet.txt", "", cpphttp::HeaderMap{{"Range", "bytes=-0"}});
+        EXPECT_EQ(res.status_code, 200);
+        EXPECT_EQ(res.body, test_data);
+    }
+
     server.Stop();
     fs::remove_all(temp_dir);
 }
@@ -2956,6 +2981,50 @@ TEST(HttpStreamingTest, HttpClientDestructorCancellation) {
     // The total upload would have taken ~50 seconds (1000 chunks of 1KB with 50ms sleep).
     // The cancellation should make the destructor return very fast (e.g. within 1.5 seconds).
     EXPECT_LT(elapsed, 1500);
+
+    server.Stop();
+}
+
+TEST(HttpStreamingTest, UploadStreamChunkedEarlyAbort) {
+    uint16_t port = 8158;
+    cpphttp::HttpServer server(port);
+    
+    std::atomic<size_t> chunk_count{0};
+    std::atomic<bool> final_called{false};
+
+    server.PostStream("/upload_abort_chunked", [&](const cpphttp::HttpRequest &req, const std::string &chunk, bool is_final) -> std::optional<cpphttp::HttpResponse> {
+        if (!is_final) {
+            chunk_count++;
+            if (chunk_count == 1) {
+                // Abort early on the first chunk
+                return cpphttp::HttpResponse::Plain("Early Abort", 400);
+            }
+            return std::nullopt;
+        } else {
+            final_called = true;
+            return cpphttp::HttpResponse::Plain("Complete");
+        }
+    });
+    server.Start();
+
+    cpphttp::HttpClient client("127.0.0.1", port);
+    
+    size_t provider_calls = 0;
+    auto stream_provider = [&](size_t max_chunk) -> std::string {
+        provider_calls++;
+        if (provider_calls == 1) return "FirstChunk";
+        if (provider_calls == 2) return "SecondChunk";
+        return "";
+    };
+
+    std::unordered_map<std::string, std::string> headers = {{"Transfer-Encoding", "chunked"}};
+    std::future<cpphttp::HttpResponse> fut = client.PostStreamAsync("/upload_abort_chunked", headers, stream_provider, 0);
+    cpphttp::HttpResponse res = fut.get();
+
+    EXPECT_EQ(res.status_code, 400);
+    EXPECT_EQ(res.body, "Early Abort");
+    EXPECT_EQ(chunk_count.load(), 1); // Should only process the first chunk!
+    EXPECT_FALSE(final_called.load()); // Should not have completed normal execution
 
     server.Stop();
 }
