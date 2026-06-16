@@ -1,8 +1,12 @@
 #pragma once
 
+#include <openssl/evp.h>
+#include <zlib.h>
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -12,19 +16,14 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <random>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
-#include <cstring>
-#include <openssl/evp.h>
-
-#include <optional>
-#include <random>
-#include <zlib.h>
 
 #include "cppasyncworker.hpp"
 #include "cpptcpnet.hpp"
@@ -63,8 +62,7 @@ struct CaseInsensitiveHash {
 
 struct CaseInsensitiveEqual {
   bool operator()(const std::string &lhs, const std::string &rhs) const {
-    if (lhs.size() != rhs.size())
-      return false;
+    if (lhs.size() != rhs.size()) return false;
     for (size_t i = 0; i < lhs.size(); ++i) {
       if (safe_tolower(lhs[i]) != safe_tolower(rhs[i])) {
         return false;
@@ -245,8 +243,7 @@ struct MultipartPart {
 inline std::vector<MultipartPart> ParseMultipart(const std::string &body,
                                                  const std::string &boundary) {
   std::vector<MultipartPart> parts;
-  if (boundary.empty())
-    return parts;
+  if (boundary.empty()) return parts;
 
   std::string delimiter = "--" + boundary;
   std::string end_delimiter = delimiter + "--";
@@ -254,8 +251,7 @@ inline std::vector<MultipartPart> ParseMultipart(const std::string &body,
   size_t pos = 0;
   while (true) {
     pos = body.find(delimiter, pos);
-    if (pos == std::string::npos)
-      break;
+    if (pos == std::string::npos) break;
 
     bool valid_start = false;
     if (pos == 0) {
@@ -284,16 +280,14 @@ inline std::vector<MultipartPart> ParseMultipart(const std::string &body,
     size_t next_delim = part_start;
     while (true) {
       next_delim = body.find(delimiter, next_delim);
-      if (next_delim == std::string::npos)
-        break;
+      if (next_delim == std::string::npos) break;
       if (next_delim > 0 && body[next_delim - 1] == '\n') {
         break;
       }
       next_delim += delimiter.length();
     }
 
-    if (next_delim == std::string::npos)
-      break;
+    if (next_delim == std::string::npos) break;
 
     std::string part_raw = body.substr(part_start, next_delim - part_start);
     if (!part_raw.empty() && part_raw.back() == '\n') {
@@ -320,10 +314,8 @@ inline std::vector<MultipartPart> ParseMultipart(const std::string &body,
       std::istringstream stream(headers_str);
       std::string line;
       while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r')
-          line.pop_back();
-        if (line.empty())
-          continue;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
 
         size_t colon = line.find(':');
         if (colon != std::string::npos) {
@@ -484,14 +476,12 @@ inline bool ParseChunkedBodyIncrementalImpl(
   size_t idx = parsed_up_to;
 
   while (true) {
-    if (idx >= buffer.size())
-      return false;
+    if (idx >= buffer.size()) return false;
 
     auto it_crlf = std::search(buffer.begin() + idx, buffer.end(),
                                reinterpret_cast<const uint8_t *>("\r\n"),
                                reinterpret_cast<const uint8_t *>("\r\n") + 2);
-    if (it_crlf == buffer.end())
-      return false;
+    if (it_crlf == buffer.end()) return false;
 
     std::string size_str(buffer.begin() + idx, it_crlf);
     size_t chunk_size = 0;
@@ -514,8 +504,7 @@ inline bool ParseChunkedBodyIncrementalImpl(
           std::search(buffer.begin() + chunk_data_start, buffer.end(),
                       reinterpret_cast<const uint8_t *>("\r\n\r\n"),
                       reinterpret_cast<const uint8_t *>("\r\n\r\n") + 4);
-      if (double_crlf == buffer.end())
-        return false;
+      if (double_crlf == buffer.end()) return false;
       parsed_up_to = std::distance(buffer.begin(), double_crlf) + 4;
       return true;
     }
@@ -599,12 +588,12 @@ inline bool ParseChunkedBody(const std::deque<uint8_t> &buffer,
 }
 
 // Match route pattern against requested segments
-inline bool
-match_route(const std::string &request_method,
-            const std::vector<std::string> &request_segments,
-            const std::string &route_method,
-            const std::vector<std::string> &route_segments,
-            std::unordered_map<std::string, std::string> &path_params) {
+inline bool match_route(
+    const std::string &request_method,
+    const std::vector<std::string> &request_segments,
+    const std::string &route_method,
+    const std::vector<std::string> &route_segments,
+    std::unordered_map<std::string, std::string> &path_params) {
   if (request_method != route_method) {
     return false;
   }
@@ -618,8 +607,7 @@ match_route(const std::string &request_method,
       if (i + 1 == route_segments.size()) {
         std::string remaining;
         for (size_t j = i; j < request_segments.size(); ++j) {
-          if (!remaining.empty())
-            remaining += "/";
+          if (!remaining.empty()) remaining += "/";
           remaining += request_segments[j];
         }
         path_params["*"] = remaining;
@@ -698,13 +686,11 @@ inline bool ParseWsFrameImpl(Container &buffer, WsFrame &frame,
   size_t header_len = 2;
 
   if (payload_len == 126) {
-    if (buffer.size() < 4)
-      return false;
+    if (buffer.size() < 4) return false;
     payload_len = (static_cast<uint64_t>(buffer[2]) << 8) | buffer[3];
     header_len = 4;
   } else if (payload_len == 127) {
-    if (buffer.size() < 10)
-      return false;
+    if (buffer.size() < 10) return false;
     payload_len = 0;
     for (int i = 0; i < 8; ++i) {
       payload_len = (payload_len << 8) | buffer[2 + i];
@@ -725,8 +711,7 @@ inline bool ParseWsFrameImpl(Container &buffer, WsFrame &frame,
   }
 
   if (frame.masked) {
-    if (buffer.size() < header_len + 4)
-      return false;
+    if (buffer.size() < header_len + 4) return false;
     std::copy(buffer.begin() + header_len, buffer.begin() + header_len + 4,
               frame.mask_key);
     header_len += 4;
@@ -810,7 +795,7 @@ inline std::vector<uint8_t> CreateWsFrame(uint8_t opcode,
 }
 
 class WebSocketConnection {
-public:
+ public:
   WebSocketConnection(uint64_t session_id,
                       std::shared_ptr<cpptcpnet::TcpListener> listener)
       : session_id_(session_id), listener_(listener) {}
@@ -852,7 +837,7 @@ public:
     }
   }
 
-private:
+ private:
   uint64_t session_id_;
   std::weak_ptr<cpptcpnet::TcpListener> listener_;
 };
@@ -880,7 +865,7 @@ struct WebSocketBehavior {
     p.keepalive_idle_secs = 60;
     p.keepalive_interval_secs = 15;
     p.keepalive_count = 4;
-    p.idle_timeout = std::chrono::milliseconds(3600000); // 1 hour idle timeout
+    p.idle_timeout = std::chrono::milliseconds(3600000);  // 1 hour idle timeout
     return p;
   }();
 };
@@ -933,48 +918,48 @@ struct HttpResponse {
 
   static std::string GetDefaultStatusMessage(int code) {
     switch (code) {
-    case 100:
-      return "Continue";
-    case 101:
-      return "Switching Protocols";
-    case 200:
-      return "OK";
-    case 201:
-      return "Created";
-    case 202:
-      return "Accepted";
-    case 204:
-      return "No Content";
-    case 301:
-      return "Moved Permanently";
-    case 302:
-      return "Found";
-    case 304:
-      return "Not Modified";
-    case 400:
-      return "Bad Request";
-    case 401:
-      return "Unauthorized";
-    case 403:
-      return "Forbidden";
-    case 404:
-      return "Not Found";
-    case 405:
-      return "Method Not Allowed";
-    case 413:
-      return "Payload Too Large";
-    case 431:
-      return "Request Header Fields Too Large";
-    case 500:
-      return "Internal Server Error";
-    case 501:
-      return "Not Implemented";
-    case 502:
-      return "Bad Gateway";
-    case 503:
-      return "Service Unavailable";
-    default:
-      return "Unknown";
+      case 100:
+        return "Continue";
+      case 101:
+        return "Switching Protocols";
+      case 200:
+        return "OK";
+      case 201:
+        return "Created";
+      case 202:
+        return "Accepted";
+      case 204:
+        return "No Content";
+      case 301:
+        return "Moved Permanently";
+      case 302:
+        return "Found";
+      case 304:
+        return "Not Modified";
+      case 400:
+        return "Bad Request";
+      case 401:
+        return "Unauthorized";
+      case 403:
+        return "Forbidden";
+      case 404:
+        return "Not Found";
+      case 405:
+        return "Method Not Allowed";
+      case 413:
+        return "Payload Too Large";
+      case 431:
+        return "Request Header Fields Too Large";
+      case 500:
+        return "Internal Server Error";
+      case 501:
+        return "Not Implemented";
+      case 502:
+        return "Bad Gateway";
+      case 503:
+        return "Service Unavailable";
+      default:
+        return "Unknown";
     }
   }
 
@@ -1106,34 +1091,21 @@ struct HttpResponse {
 
 inline std::string GetMimeType(const std::string &filepath) {
   size_t dot_pos = filepath.find_last_of('.');
-  if (dot_pos == std::string::npos)
-    return "application/octet-stream";
+  if (dot_pos == std::string::npos) return "application/octet-stream";
   std::string ext = filepath.substr(dot_pos + 1);
   std::transform(ext.begin(), ext.end(), ext.begin(), safe_tolower);
-  if (ext == "html" || ext == "htm")
-    return "text/html";
-  if (ext == "css")
-    return "text/css";
-  if (ext == "js")
-    return "application/javascript";
-  if (ext == "json")
-    return "application/json";
-  if (ext == "png")
-    return "image/png";
-  if (ext == "jpg" || ext == "jpeg")
-    return "image/jpeg";
-  if (ext == "gif")
-    return "image/gif";
-  if (ext == "svg")
-    return "image/svg+xml";
-  if (ext == "txt")
-    return "text/plain";
-  if (ext == "ico")
-    return "image/x-icon";
-  if (ext == "xml")
-    return "application/xml";
-  if (ext == "pdf")
-    return "application/pdf";
+  if (ext == "html" || ext == "htm") return "text/html";
+  if (ext == "css") return "text/css";
+  if (ext == "js") return "application/javascript";
+  if (ext == "json") return "application/json";
+  if (ext == "png") return "image/png";
+  if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
+  if (ext == "gif") return "image/gif";
+  if (ext == "svg") return "image/svg+xml";
+  if (ext == "txt") return "text/plain";
+  if (ext == "ico") return "image/x-icon";
+  if (ext == "xml") return "application/xml";
+  if (ext == "pdf") return "application/pdf";
   return "application/octet-stream";
 }
 
@@ -1147,14 +1119,14 @@ struct CorsConfig {
   std::vector<std::string> allow_headers = {"*"};
   std::vector<std::string> expose_headers = {};
   bool allow_credentials = false;
-  std::chrono::seconds max_age = std::chrono::seconds(86400); // 24 hours
+  std::chrono::seconds max_age = std::chrono::seconds(86400);  // 24 hours
 };
 
 /**
  * @brief CORS middleware for handling Cross-Origin Resource Sharing.
  */
 class Cors {
-public:
+ public:
   Cors(CorsConfig config = CorsConfig()) : config_(std::move(config)) {}
 
   bool operator()(HttpRequest &req, HttpResponse &res) {
@@ -1198,13 +1170,12 @@ public:
     return true;
   }
 
-private:
+ private:
   CorsConfig config_;
 
   static std::string join(const std::vector<std::string> &vec,
                           const std::string &delim) {
-    if (vec.empty())
-      return "";
+    if (vec.empty()) return "";
     std::string result = vec[0];
     for (size_t i = 1; i < vec.size(); ++i) {
       result += delim + vec[i];
@@ -1217,9 +1188,10 @@ private:
  * @brief RateLimiter middleware to limit requests per IP address.
  */
 class RateLimiter {
-public:
+ public:
   RateLimiter(size_t max_requests, std::chrono::seconds window_duration)
-      : max_requests_(max_requests), window_duration_(window_duration),
+      : max_requests_(max_requests),
+        window_duration_(window_duration),
         state_(std::make_shared<State>()) {}
 
   bool operator()(HttpRequest &req, HttpResponse &res) {
@@ -1260,10 +1232,10 @@ public:
     res.headers["Content-Type"] = "text/plain";
     res.headers["Retry-After"] = std::to_string(window_duration_.count());
     res.body = "Rate limit exceeded. Please try again later.";
-    return false; // Stop further processing
+    return false;  // Stop further processing
   }
 
-private:
+ private:
   struct ClientState {
     size_t count = 0;
     std::chrono::steady_clock::time_point window_start;
@@ -1289,7 +1261,7 @@ private:
  * @brief ResponseCache wraps a RouteHandler to cache its responses.
  */
 class ResponseCache {
-private:
+ private:
   struct CacheEntry {
     HttpResponse response;
     std::chrono::steady_clock::time_point expires_at;
@@ -1306,15 +1278,14 @@ private:
     std::deque<CacheQueueEntry> cleanup_queue;
   };
 
-public:
+ public:
   ResponseCache(std::chrono::seconds default_duration)
       : default_duration_(default_duration),
         state_(std::make_shared<CacheState>()) {}
 
-  std::function<HttpResponse(const HttpRequest &)>
-  Wrap(std::function<HttpResponse(const HttpRequest &)> handler,
-       std::optional<std::chrono::seconds> duration = std::nullopt) {
-
+  std::function<HttpResponse(const HttpRequest &)> Wrap(
+      std::function<HttpResponse(const HttpRequest &)> handler,
+      std::optional<std::chrono::seconds> duration = std::nullopt) {
     std::chrono::seconds cache_dur = duration.value_or(default_duration_);
     auto state = state_;
 
@@ -1385,7 +1356,7 @@ public:
     };
   }
 
-private:
+ private:
   std::chrono::seconds default_duration_;
   std::shared_ptr<CacheState> state_;
 };
@@ -1394,7 +1365,7 @@ private:
  * @brief A high-performance, asynchronous HTTP server built on cpptcpnet.
  */
 class HttpServer {
-public:
+ public:
   using RouteHandler = std::function<HttpResponse(const HttpRequest &)>;
   using Middleware = std::function<bool(HttpRequest &, HttpResponse &)>;
   using StreamHandler = std::function<std::optional<HttpResponse>(
@@ -1616,12 +1587,10 @@ public:
               }
             } else {
               start = std::stoull(start_str);
-              if (!end_str.empty())
-                end = std::stoull(end_str);
+              if (!end_str.empty()) end = std::stoull(end_str);
 
               if (start <= end && start < file_size) {
-                if (end >= file_size)
-                  end = file_size - 1;
+                if (end >= file_size) end = file_size - 1;
                 is_partial = true;
               } else {
                 res.status_code = 416;
@@ -1790,7 +1759,7 @@ public:
   }
   std::chrono::milliseconds GetIdleTimeout() const { return idle_timeout_; }
 
-private:
+ private:
   struct Route {
     std::string method;
     std::string path_pattern;
@@ -1853,13 +1822,11 @@ private:
     size_t max_flight =
         listener_->GetConnectionProfile(session_id).max_outbound_buffer_size /
         2;
-    if (max_flight < 65536)
-      max_flight = 65536;
+    if (max_flight < 65536) max_flight = 65536;
 
     size_t chunk_size =
         listener_->GetConnectionProfile(session_id).send_chunk_size;
-    if (chunk_size == 0)
-      chunk_size = 65536;
+    if (chunk_size == 0) chunk_size = 65536;
 
     while (session->file_bytes_in_flight < max_flight &&
            *session->file_stream && running_) {
@@ -1868,8 +1835,7 @@ private:
           session->file_bytes_remaining < chunk_size) {
         to_read = session->file_bytes_remaining;
       }
-      if (to_read == 0)
-        break;
+      if (to_read == 0) break;
 
       std::vector<char> stream_buffer(to_read);
       session->file_stream->read(stream_buffer.data(), stream_buffer.size());
@@ -1914,8 +1880,7 @@ private:
           buffer, session->chunk_parsed_up_to, session->partial_body,
           chunked_bad_request, max_body_size_, chunked_payload_too_large,
           [&](const std::string &chunk) {
-            if (handler_response)
-              return;
+            if (handler_response) return;
             if (auto res =
                     session->stream_handler(session->request, chunk, false)) {
               handler_response = res;
@@ -1960,9 +1925,9 @@ private:
       size_t to_process = std::min(
           available, session->content_length - session->stream_bytes_received);
       if (to_process > 0) {
-        std::string chunk(buffer.begin() + session->body_start_idx,
-                          buffer.begin() + session->body_start_idx +
-                              to_process);
+        std::string chunk(
+            buffer.begin() + session->body_start_idx,
+            buffer.begin() + session->body_start_idx + to_process);
         if (auto res =
                 session->stream_handler(session->request, chunk, false)) {
           handler_response = res;
@@ -2577,18 +2542,15 @@ private:
     bool transfer_encoding_present = false;
 
     if (std::getline(stream, line)) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
+      if (!line.empty() && line.back() == '\r') line.pop_back();
 
       std::istringstream line_stream(line);
       line_stream >> req.method >> req.path >> req.version;
     }
 
     while (std::getline(stream, line)) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
-      if (line.empty())
-        break;
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.empty()) break;
 
       size_t colon_pos = line.find(':');
       if (colon_pos != std::string::npos) {
@@ -2635,8 +2597,7 @@ private:
             if (!token.empty()) {
               te_encodings.push_back(token);
             }
-            if (comma == std::string::npos)
-              break;
+            if (comma == std::string::npos) break;
             pos = comma + 1;
           }
         }
@@ -2742,7 +2703,6 @@ private:
 
       if (lower_upgrade.find("websocket") != std::string::npos &&
           lower_conn.find("upgrade") != std::string::npos && !ws_key.empty()) {
-
         size_t first = ws_key.find_first_not_of(" \t\r\n");
         size_t last = ws_key.find_last_not_of(" \t\r\n");
         if (first != std::string::npos && last != std::string::npos) {
@@ -2849,7 +2809,7 @@ inline std::shared_ptr<cppasyncworker::WorkerPool> GetClientWorkerPool() {
 }
 
 class HttpClient {
-public:
+ public:
   HttpClient(const std::string &host, uint16_t port,
              std::shared_ptr<cppasyncworker::WorkerPool> pool = nullptr)
       : host_(host), port_(port), pool_(pool ? pool : GetClientWorkerPool()) {}
@@ -2886,45 +2846,45 @@ public:
   void SetMaxRedirects(int max_redirects) { max_redirects_ = max_redirects; }
   int GetMaxRedirects() const { return max_redirects_; }
 
-  HttpResponse
-  Get(const std::string &path,
+  HttpResponse Get(
+      const std::string &path,
       const std::unordered_map<std::string, std::string> &headers = {}) {
     return SendRequest("GET", path, "", headers);
   }
 
-  HttpResponse
-  Post(const std::string &path, const std::string &body,
-       const std::unordered_map<std::string, std::string> &headers = {}) {
+  HttpResponse Post(
+      const std::string &path, const std::string &body,
+      const std::unordered_map<std::string, std::string> &headers = {}) {
     return SendRequest("POST", path, body, headers);
   }
 
-  HttpResponse
-  Put(const std::string &path, const std::string &body,
+  HttpResponse Put(
+      const std::string &path, const std::string &body,
       const std::unordered_map<std::string, std::string> &headers = {}) {
     return SendRequest("PUT", path, body, headers);
   }
 
-  HttpResponse
-  Delete(const std::string &path,
-         const std::unordered_map<std::string, std::string> &headers = {}) {
+  HttpResponse Delete(
+      const std::string &path,
+      const std::unordered_map<std::string, std::string> &headers = {}) {
     return SendRequest("DELETE", path, "", headers);
   }
 
-  std::future<HttpResponse>
-  GetAsync(const std::string &path,
-           const std::unordered_map<std::string, std::string> &headers = {}) {
+  std::future<HttpResponse> GetAsync(
+      const std::string &path,
+      const std::unordered_map<std::string, std::string> &headers = {}) {
     return SendRequestAsync("GET", path, "", headers);
   }
 
-  std::future<HttpResponse>
-  PostAsync(const std::string &path, const std::string &body,
-            const std::unordered_map<std::string, std::string> &headers = {}) {
+  std::future<HttpResponse> PostAsync(
+      const std::string &path, const std::string &body,
+      const std::unordered_map<std::string, std::string> &headers = {}) {
     return SendRequestAsync("POST", path, body, headers);
   }
 
-  std::future<HttpResponse>
-  PutAsync(const std::string &path, const std::string &body,
-           const std::unordered_map<std::string, std::string> &headers = {}) {
+  std::future<HttpResponse> PutAsync(
+      const std::string &path, const std::string &body,
+      const std::unordered_map<std::string, std::string> &headers = {}) {
     return SendRequestAsync("PUT", path, body, headers);
   }
 
@@ -2934,11 +2894,11 @@ public:
     return SendRequestAsync("DELETE", path, "", headers);
   }
 
-  HttpResponse
-  GetStream(const std::string &path,
-            std::function<void(const HttpResponse &, const std::string &, bool)>
-                on_chunk,
-            const std::unordered_map<std::string, std::string> &headers = {}) {
+  HttpResponse GetStream(
+      const std::string &path,
+      std::function<void(const HttpResponse &, const std::string &, bool)>
+          on_chunk,
+      const std::unordered_map<std::string, std::string> &headers = {}) {
     std::lock_guard<std::mutex> req_lock(request_mutex_);
     HeaderMap h_map(headers.begin(), headers.end());
     return SendRequestInternal("GET", path, "", h_map, 0, on_chunk);
@@ -2954,11 +2914,11 @@ public:
     return SendRequestInternal("POST", path, body, h_map, 0, on_chunk);
   }
 
-  std::future<HttpResponse>
-  PostStreamAsync(const std::string &path,
-                  const std::unordered_map<std::string, std::string> &headers,
-                  std::function<std::string(size_t)> stream_provider,
-                  size_t content_length) {
+  std::future<HttpResponse> PostStreamAsync(
+      const std::string &path,
+      const std::unordered_map<std::string, std::string> &headers,
+      std::function<std::string(size_t)> stream_provider,
+      size_t content_length) {
     std::lock_guard<std::mutex> lock(tasks_mutex_);
 
     pending_tasks_.erase(
@@ -2998,11 +2958,11 @@ public:
     return res_future;
   }
 
-  std::future<HttpResponse>
-  PutStreamAsync(const std::string &path,
-                 const std::unordered_map<std::string, std::string> &headers,
-                 std::function<std::string(size_t)> stream_provider,
-                 size_t content_length) {
+  std::future<HttpResponse> PutStreamAsync(
+      const std::string &path,
+      const std::unordered_map<std::string, std::string> &headers,
+      std::function<std::string(size_t)> stream_provider,
+      size_t content_length) {
     std::lock_guard<std::mutex> lock(tasks_mutex_);
 
     pending_tasks_.erase(
@@ -3098,7 +3058,7 @@ public:
     return SendRequestInternal(method, path, body, headers, 0);
   }
 
-private:
+ private:
   struct ParsedResponseHeader {
     std::string status_code_str;
     std::string status_message;
@@ -3157,10 +3117,8 @@ private:
 
     if (old_client || old_worker) {
       std::thread([c = std::move(old_client), w = std::move(old_worker)]() {
-        if (c)
-          c->Stop();
-        if (w)
-          w->Stop();
+        if (c) c->Stop();
+        if (w) w->Stop();
       }).detach();
     }
   }
@@ -3266,8 +3224,7 @@ private:
     size_t body_start_idx = 0;
 
     auto check_response = [&]() {
-      if (response_ready)
-        return true;
+      if (response_ready) return true;
 
       if (!header_parsed) {
         const std::string terminator = "\r\n\r\n";
@@ -3382,9 +3339,9 @@ private:
               size_t to_process =
                   std::min(available, content_length - client_bytes_received);
               if (to_process > 0) {
-                std::string chunk(buffer_.begin() + body_start_idx,
-                                  buffer_.begin() + body_start_idx +
-                                      to_process);
+                std::string chunk(
+                    buffer_.begin() + body_start_idx,
+                    buffer_.begin() + body_start_idx + to_process);
                 HttpResponse temp_res;
                 temp_res.status_code = status_code;
                 temp_res.status_message = req.status_message;
@@ -3518,11 +3475,10 @@ private:
     return http_response;
   }
 
-  HttpResponse
-  SendRequestStreamUpload(const std::string &method, const std::string &path,
-                          std::function<std::string(size_t)> stream_provider,
-                          size_t content_length, const HeaderMap &headers,
-                          int redirect_depth = 0) {
+  HttpResponse SendRequestStreamUpload(
+      const std::string &method, const std::string &path,
+      std::function<std::string(size_t)> stream_provider, size_t content_length,
+      const HeaderMap &headers, int redirect_depth = 0) {
     if (redirect_depth > max_redirects_) {
       throw std::runtime_error("Too many redirects");
     }
@@ -3552,8 +3508,7 @@ private:
     for (const auto &[k, v] : headers) {
       std::string lk = k;
       std::transform(lk.begin(), lk.end(), lk.begin(), safe_tolower);
-      if (lk == "transfer-encoding")
-        te_val = v;
+      if (lk == "transfer-encoding") te_val = v;
     }
     if (te_val.find("chunked") != std::string::npos) {
       is_chunked = true;
@@ -3564,12 +3519,9 @@ private:
     for (const auto &[key, value] : headers) {
       std::string lk = key;
       std::transform(lk.begin(), lk.end(), lk.begin(), safe_tolower);
-      if (lk == "connection")
-        has_connection = true;
-      if (lk == "accept-encoding")
-        has_accept_encoding = true;
-      if (lk == "transfer-encoding")
-        continue;
+      if (lk == "connection") has_connection = true;
+      if (lk == "accept-encoding") has_accept_encoding = true;
+      if (lk == "transfer-encoding") continue;
       request_stream << key << ": " << value << "\r\n";
     }
 
@@ -3613,8 +3565,7 @@ private:
       size_t max_flight =
           client_->GetConnectionProfile(session_id_).max_outbound_buffer_size /
           2;
-      if (max_flight < 65536)
-        max_flight = 65536;
+      if (max_flight < 65536) max_flight = 65536;
 
       if (client_bytes_in_flight >= max_flight) {
 #ifdef _WIN32
@@ -3859,8 +3810,7 @@ private:
     std::string line;
 
     if (std::getline(stream, line)) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
+      if (!line.empty() && line.back() == '\r') line.pop_back();
 
       std::istringstream line_stream(line);
       std::string protocol;
@@ -3879,10 +3829,8 @@ private:
     }
 
     while (std::getline(stream, line)) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
-      if (line.empty())
-        break;
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.empty()) break;
 
       size_t colon_pos = line.find(':');
       if (colon_pos != std::string::npos) {
@@ -3910,7 +3858,7 @@ private:
 };
 
 class WebSocketClient {
-public:
+ public:
   using WsConnectHandler = std::function<void()>;
   using WsMessageHandler = std::function<void(const std::string &)>;
   using WsBinaryHandler = std::function<void(const std::vector<uint8_t> &)>;
@@ -4077,10 +4025,8 @@ public:
     // Skip status line
     std::getline(stream, line);
     while (std::getline(stream, line)) {
-      if (!line.empty() && line.back() == '\r')
-        line.pop_back();
-      if (line.empty())
-        break;
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.empty()) break;
       size_t colon_pos = line.find(':');
       if (colon_pos != std::string::npos) {
         std::string h_key = line.substr(0, colon_pos);
@@ -4135,10 +4081,8 @@ public:
 
     if (old_client || old_worker) {
       std::thread([c = std::move(old_client), w = std::move(old_worker)]() {
-        if (c)
-          c->Stop();
-        if (w)
-          w->Stop();
+        if (c) c->Stop();
+        if (w) w->Stop();
       }).detach();
     }
   }
@@ -4165,8 +4109,7 @@ public:
 
     {
       std::lock_guard<std::mutex> lock(mtx_);
-      if (!connected_)
-        return;
+      if (!connected_) return;
     }
 
     SendFrame(0x08, payload);
@@ -4183,17 +4126,16 @@ public:
     }
   }
 
-private:
+ private:
   bool SendFrame(uint8_t opcode, const std::vector<uint8_t> &payload) {
     std::lock_guard<std::mutex> lock(mtx_);
-    if (!connected_ || session_id_ == 0 || !client_)
-      return false;
+    if (!connected_ || session_id_ == 0 || !client_) return false;
 
     std::vector<uint8_t> frame;
     frame.push_back(0x80 | (opcode & 0x0F));
 
     uint64_t len = payload.size();
-    uint8_t len_byte = 0x80; // client MUST mask
+    uint8_t len_byte = 0x80;  // client MUST mask
     if (len <= 125) {
       frame.push_back(len_byte | static_cast<uint8_t>(len));
     } else if (len <= 65535) {
@@ -4395,4 +4337,4 @@ private:
   bool processing_frames_ = false;
 };
 
-} // namespace cpphttp
+}  // namespace cpphttp

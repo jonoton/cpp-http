@@ -33,6 +33,7 @@ compile_commands.json
 *_demo
 *_sim
 *_logger
+.cache/
 
 # Jekyll
 docs/_site/

@@ -1,7 +1,8 @@
-#include "cpphttp.hpp"
 #include <iostream>
 
-const char* UI_HTML = R"html(<!DOCTYPE html>
+#include "cpphttp.hpp"
+
+const char *UI_HTML = R"html(<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -606,15 +607,20 @@ int main() {
   // Register a WebSocket echo route
   cpphttp::WebSocketBehavior ws_behavior;
   ws_behavior.on_open = [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
-    std::cout << "WebSocket connection opened: session_id=" << conn->GetSessionId() << std::endl;
+    std::cout << "WebSocket connection opened: session_id="
+              << conn->GetSessionId() << std::endl;
   };
-  ws_behavior.on_message = [](std::shared_ptr<cpphttp::WebSocketConnection> conn, const std::string &msg) {
-    std::cout << "WebSocket received message: " << msg << std::endl;
-    conn->Send("Server Echo: " + msg);
-  };
-  ws_behavior.on_close = [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
-    std::cout << "WebSocket connection closed: session_id=" << conn->GetSessionId() << std::endl;
-  };
+  ws_behavior.on_message =
+      [](std::shared_ptr<cpphttp::WebSocketConnection> conn,
+         const std::string &msg) {
+        std::cout << "WebSocket received message: " << msg << std::endl;
+        conn->Send("Server Echo: " + msg);
+      };
+  ws_behavior.on_close =
+      [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
+        std::cout << "WebSocket connection closed: session_id="
+                  << conn->GetSessionId() << std::endl;
+      };
   server.WebSocket("/ws", std::move(ws_behavior));
 
   // Start the server
