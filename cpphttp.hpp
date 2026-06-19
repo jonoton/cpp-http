@@ -31,8 +31,8 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 3;
-constexpr int VERSION_PATCH = 2;
+constexpr int VERSION_MINOR = 4;
+constexpr int VERSION_PATCH = 0;
 
 /**
  * @brief Returns the library version as a string.
@@ -1534,8 +1534,9 @@ class HttpServer {
       // Path traversal check
       if (canonical_filepath.rfind(canonical_dir, 0) != 0 ||
           (canonical_filepath.size() > canonical_dir.size() &&
-           canonical_dir.back() != '/' &&
-           canonical_filepath[canonical_dir.size()] != '/')) {
+           canonical_dir.back() != '/' && canonical_dir.back() != '\\' &&
+           canonical_filepath[canonical_dir.size()] != '/' &&
+           canonical_filepath[canonical_dir.size()] != '\\')) {
         return handle_fallback();
       }
 
@@ -1743,6 +1744,10 @@ class HttpServer {
       thread_to_join.join();
     }
     listener_->Stop();
+    {
+      std::lock_guard<std::mutex> lock(session_mutex_);
+      sessions_.clear();
+    }
   }
 
   cpptcpnet::TcpListener &GetListener() { return *listener_; }

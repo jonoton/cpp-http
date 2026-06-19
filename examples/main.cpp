@@ -318,7 +318,8 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
   <div class="cert-info">
     Running over HTTPS. If WebSocket fails to connect, please ensure you have accepted the self-signed certificate by visiting <a href="https://localhost:8080/" target="_blank">https://localhost:8080/</a> and clicking "Advanced" -> "Proceed".
   </div>
-
+)html"
+                      R"html(
   <script>
     const messagesDiv = document.getElementById('messages');
     const input = document.getElementById('messageInput');

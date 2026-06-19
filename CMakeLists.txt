@@ -20,7 +20,30 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cpptcpnet)
 
-find_package(ZLIB REQUIRED)
+find_package(ZLIB QUIET)
+if(NOT ZLIB_FOUND)
+    message(STATUS "ZLIB not found, downloading via FetchContent...")
+    include(FetchContent)
+    FetchContent_Declare(
+      zlib
+      URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+    )
+    FetchContent_MakeAvailable(zlib)
+    
+    if(TARGET zlibstatic)
+        add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        target_include_directories(zlibstatic PUBLIC 
+            $<BUILD_INTERFACE:${zlib_SOURCE_DIR}> 
+            $<BUILD_INTERFACE:${zlib_BINARY_DIR}>
+        )
+    elseif(TARGET zlib)
+        add_library(ZLIB::ZLIB ALIAS zlib)
+        target_include_directories(zlib PUBLIC 
+            $<BUILD_INTERFACE:${zlib_SOURCE_DIR}> 
+            $<BUILD_INTERFACE:${zlib_BINARY_DIR}>
+        )
+    endif()
+endif()
 
 # Define as an interface library (header-only)
 add_library(cpphttp INTERFACE)
