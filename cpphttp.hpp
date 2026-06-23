@@ -31,7 +31,7 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 4;
+constexpr int VERSION_MINOR = 5;
 constexpr int VERSION_PATCH = 0;
 
 /**
@@ -1705,8 +1705,13 @@ class HttpServer {
                     session_to_close->mutex);
                 if (session_to_close->is_websocket &&
                     session_to_close->ws_behavior.on_close) {
-                  session_to_close->ws_behavior.on_close(
-                      session_to_close->ws_connection);
+                  try {
+                    session_to_close->ws_behavior.on_close(
+                        session_to_close->ws_connection);
+                  } catch (...) {
+                    // Prevent user callback exceptions from crashing the
+                    // background event thread.
+                  }
                 }
               }
               {
@@ -1824,13 +1829,22 @@ class HttpServer {
         !session->file_stream->is_open())
       return;
 
-    size_t max_flight =
-        listener_->GetConnectionProfile(session_id).max_outbound_buffer_size /
-        2;
-    if (max_flight < 65536) max_flight = 65536;
+    size_t max_flight = 65536;
+    size_t chunk_size = 65536;
 
-    size_t chunk_size =
-        listener_->GetConnectionProfile(session_id).send_chunk_size;
+    try {
+      auto profile = listener_->GetConnectionProfile(session_id);
+      max_flight = profile.max_outbound_buffer_size / 2;
+      chunk_size = profile.send_chunk_size;
+    } catch (const std::exception &) {
+      // The session has been closed/disconnected during the file transfer pump.
+      // Cancel the streaming file transfer gracefully.
+      session->is_streaming_file = false;
+      session->file_stream.reset();
+      return;
+    }
+
+    if (max_flight < 65536) max_flight = 65536;
     if (chunk_size == 0) chunk_size = 65536;
 
     while (session->file_bytes_in_flight < max_flight &&
@@ -3438,17 +3452,25 @@ class HttpClient {
       return false;
     };
 
-    if (!cv_.wait_for(lock, timeout_, check_response)) {
-      lock.unlock();
-      CleanUpConnection();
-      throw std::runtime_error("Request timed out");
-    }
+    try {
+      if (!cv_.wait_for(lock, timeout_, check_response)) {
+        lock.unlock();
+        CleanUpConnection();
+        throw std::runtime_error("Request timed out");
+      }
 
-    if (!response_ready) {
-      lock.unlock();
+      if (!response_ready) {
+        lock.unlock();
+        CleanUpConnection();
+        throw std::runtime_error(
+            "Connection closed before response was fully received");
+      }
+    } catch (...) {
+      if (lock.owns_lock()) {
+        lock.unlock();
+      }
       CleanUpConnection();
-      throw std::runtime_error(
-          "Connection closed before response was fully received");
+      throw;
     }
 
     buffer_.erase(buffer_.begin(), buffer_.begin() + consumed_bytes);
@@ -3567,9 +3589,14 @@ class HttpClient {
         }
       }
 
-      size_t max_flight =
-          client_->GetConnectionProfile(session_id_).max_outbound_buffer_size /
-          2;
+      size_t max_flight = 65536;
+      try {
+        auto profile = client_->GetConnectionProfile(session_id_);
+        max_flight = profile.max_outbound_buffer_size / 2;
+      } catch (const std::exception &) {
+        CleanUpConnection();
+        throw std::runtime_error("Connection closed during upload");
+      }
       if (max_flight < 65536) max_flight = 65536;
 
       if (client_bytes_in_flight >= max_flight) {

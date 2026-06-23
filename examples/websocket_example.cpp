@@ -627,8 +627,9 @@ int main() {
   // Start the server
   try {
     server.Start();
-    std::cout << "HTTPS server started on port 8080. Press Enter to stop."
-              << std::endl;
+    std::cout << "HTTPS server started on port 8080." << std::endl;
+    std::cout << "Visit https://localhost:8080/ in your browser." << std::endl;
+    std::cout << "Press Enter to stop." << std::endl;
     std::cin.get();
     server.Stop();
   } catch (const std::exception &e) {

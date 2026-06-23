@@ -34,6 +34,7 @@ compile_commands.json
 *_sim
 *_logger
 .cache/
+demo_download_dist/
 
 # Jekyll
 docs/_site/
