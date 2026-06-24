@@ -1,7 +1,10 @@
 #pragma once
 
+#include <brotli/decode.h>
+#include <brotli/encode.h>
 #include <openssl/evp.h>
 #include <zlib.h>
+#include <zstd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -31,7 +34,7 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 5;
+constexpr int VERSION_MINOR = 6;
 constexpr int VERSION_PATCH = 0;
 
 /**
@@ -83,14 +86,15 @@ inline bool is_valid_header_value(const std::string &val) {
          val.find('\n') == std::string::npos;
 }
 
-inline std::optional<std::string> gzip_compress(const std::string &data) {
+inline std::optional<std::string> gzip_compress(
+    const std::string &data, int level = Z_DEFAULT_COMPRESSION) {
   if (data.size() > std::numeric_limits<uInt>::max()) {
     return std::nullopt;
   }
   z_stream zs;
   std::memset(&zs, 0, sizeof(zs));
-  if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8,
-                   Z_DEFAULT_STRATEGY) != Z_OK) {
+  if (deflateInit2(&zs, level, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) !=
+      Z_OK) {
     return std::nullopt;
   }
   zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(data.data()));
@@ -155,6 +159,400 @@ inline std::optional<std::string> gzip_decompress(const std::string &data) {
   }
   return outstring;
 }
+
+inline std::optional<std::string> brotli_compress(const std::string &data,
+                                                  int quality = 4) {
+  size_t max_compressed_size = BrotliEncoderMaxCompressedSize(data.size());
+  std::string outstring(max_compressed_size, '\0');
+  size_t encoded_size = max_compressed_size;
+
+  if (BrotliEncoderCompress(
+          quality, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC, data.size(),
+          reinterpret_cast<const uint8_t *>(data.data()), &encoded_size,
+          reinterpret_cast<uint8_t *>(&outstring[0])) == BROTLI_FALSE) {
+    return std::nullopt;
+  }
+  outstring.resize(encoded_size);
+  return outstring;
+}
+
+inline std::optional<std::string> brotli_decompress(const std::string &data) {
+  BrotliDecoderState *state =
+      BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
+  if (!state) {
+    return std::nullopt;
+  }
+
+  size_t available_in = data.size();
+  const uint8_t *next_in = reinterpret_cast<const uint8_t *>(data.data());
+
+  std::string outstring;
+  char outbuffer[32768];
+
+  BrotliDecoderResult result = BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT;
+  while (result == BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT) {
+    size_t available_out = sizeof(outbuffer);
+    uint8_t *next_out = reinterpret_cast<uint8_t *>(outbuffer);
+
+    result = BrotliDecoderDecompressStream(state, &available_in, &next_in,
+                                           &available_out, &next_out, nullptr);
+
+    size_t decompressed_size = sizeof(outbuffer) - available_out;
+    if (decompressed_size > 0) {
+      outstring.append(outbuffer, decompressed_size);
+    }
+
+    if (result == BROTLI_DECODER_RESULT_ERROR) {
+      BrotliDecoderDestroyInstance(state);
+      return std::nullopt;
+    }
+  }
+
+  BrotliDecoderDestroyInstance(state);
+
+  if (result != BROTLI_DECODER_RESULT_SUCCESS) {
+    return std::nullopt;
+  }
+  return outstring;
+}
+
+inline std::optional<std::string> zstd_compress(const std::string &data,
+                                                int level = 3) {
+  size_t max_compressed_size = ZSTD_compressBound(data.size());
+  std::string outstring(max_compressed_size, '\0');
+
+  size_t const compressed_size = ZSTD_compress(
+      &outstring[0], max_compressed_size, data.data(), data.size(), level);
+
+  if (ZSTD_isError(compressed_size)) {
+    return std::nullopt;
+  }
+  outstring.resize(compressed_size);
+  return outstring;
+}
+
+inline std::optional<std::string> zstd_decompress(const std::string &data) {
+  unsigned long long const rSize =
+      ZSTD_getFrameContentSize(data.data(), data.size());
+  if (rSize == ZSTD_CONTENTSIZE_ERROR) {
+    return std::nullopt;
+  }
+
+  if (rSize != ZSTD_CONTENTSIZE_UNKNOWN) {
+    std::string outstring(static_cast<size_t>(rSize), '\0');
+    size_t const dSize = ZSTD_decompress(&outstring[0], outstring.size(),
+                                         data.data(), data.size());
+    if (ZSTD_isError(dSize)) {
+      return std::nullopt;
+    }
+    return outstring;
+  }
+
+  ZSTD_DCtx *const dctx = ZSTD_createDCtx();
+  if (!dctx) return std::nullopt;
+
+  size_t const buffOutSize = ZSTD_DStreamOutSize();
+  std::vector<char> buffOut(buffOutSize);
+
+  std::string outstring;
+  ZSTD_inBuffer input = {data.data(), data.size(), 0};
+
+  bool more_output = true;
+  while (input.pos < input.size || more_output) {
+    ZSTD_outBuffer output = {buffOut.data(), buffOutSize, 0};
+    size_t const ret = ZSTD_decompressStream(dctx, &output, &input);
+    if (ZSTD_isError(ret)) {
+      ZSTD_freeDCtx(dctx);
+      return std::nullopt;
+    }
+    if (output.pos > 0) {
+      outstring.append(buffOut.data(), output.pos);
+    }
+    more_output = (ret > 0 && output.pos == buffOutSize);
+    if (ret == 0) {
+      break;
+    }
+    if (input.pos == input.size && !more_output) {
+      break;
+    }
+  }
+
+  ZSTD_freeDCtx(dctx);
+  return outstring;
+}
+
+inline std::string negotiate_encoding(const std::string &accept_encoding) {
+  if (accept_encoding.empty()) {
+    return "identity";
+  }
+
+  double q_zstd = -1.0;
+  double q_br = -1.0;
+  double q_gzip = -1.0;
+  double q_wildcard = -1.0;
+  double q_identity = -1.0;
+
+  std::istringstream ss(accept_encoding);
+  std::string token;
+  while (std::getline(ss, token, ',')) {
+    size_t start = token.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) continue;
+    size_t end = token.find_last_not_of(" \t\r\n");
+    std::string part = token.substr(start, end - start + 1);
+
+    size_t semi = part.find(';');
+    std::string name =
+        (semi == std::string::npos) ? part : part.substr(0, semi);
+
+    size_t name_start = name.find_first_not_of(" \t");
+    size_t name_end = name.find_last_not_of(" \t");
+    if (name_start != std::string::npos && name_end != std::string::npos) {
+      name = name.substr(name_start, name_end - name_start + 1);
+    }
+    std::transform(name.begin(), name.end(), name.begin(), safe_tolower);
+
+    double q = 1.0;
+    if (semi != std::string::npos) {
+      std::string param = part.substr(semi + 1);
+      size_t q_pos = param.find("q=");
+      if (q_pos != std::string::npos) {
+        try {
+          q = std::stod(param.substr(q_pos + 2));
+        } catch (...) {
+          q = 1.0;
+        }
+      }
+    }
+
+    if (name == "zstd") {
+      q_zstd = q;
+    } else if (name == "br") {
+      q_br = q;
+    } else if (name == "gzip") {
+      q_gzip = q;
+    } else if (name == "*") {
+      q_wildcard = q;
+    } else if (name == "identity") {
+      q_identity = q;
+    }
+  }
+
+  if (q_wildcard >= 0.0) {
+    if (q_zstd < 0.0) q_zstd = q_wildcard;
+    if (q_br < 0.0) q_br = q_wildcard;
+    if (q_gzip < 0.0) q_gzip = q_wildcard;
+  }
+
+  if (q_zstd < 0.0) q_zstd = 0.0;
+  if (q_br < 0.0) q_br = 0.0;
+  if (q_gzip < 0.0) q_gzip = 0.0;
+
+  bool identity_explicit = (q_identity >= 0.0);
+  if (!identity_explicit) {
+    q_identity = 0.0001;
+  }
+
+  std::string best_encoding = "identity";
+  double best_q = q_identity;
+
+  if (q_gzip > 0.0 && q_gzip > best_q) {
+    best_q = q_gzip;
+    best_encoding = "gzip";
+  }
+  if (q_br > 0.0 && q_br >= best_q) {
+    best_q = q_br;
+    best_encoding = "br";
+  }
+  if (q_zstd > 0.0 && q_zstd >= best_q) {
+    best_q = q_zstd;
+    best_encoding = "zstd";
+  }
+
+  return best_encoding;
+}
+
+inline bool is_compressible_mimetype(const std::string &content_type) {
+  if (content_type.empty())
+    return true;  // Default to compressible if not specified
+
+  std::string ct = content_type;
+  std::transform(ct.begin(), ct.end(), ct.begin(), safe_tolower);
+
+  size_t semi = ct.find(';');
+  if (semi != std::string::npos) {
+    ct = ct.substr(0, semi);
+    size_t end = ct.find_last_not_of(" \t");
+    if (end != std::string::npos) {
+      ct = ct.substr(0, end + 1);
+    }
+  }
+
+  // Exclude known pre-compressed image formats (except SVG, which is text-based
+  // XML)
+  if (ct == "image/jpeg" || ct == "image/jpg" || ct == "image/png" ||
+      ct == "image/gif" || ct == "image/webp" || ct == "image/heic" ||
+      ct == "image/tiff" || ct == "image/x-icon" || ct == "image/bmp") {
+    return false;
+  }
+
+  // Exclude video & audio formats
+  if (ct.rfind("video/", 0) == 0 || ct.rfind("audio/", 0) == 0) {
+    return false;
+  }
+
+  // Exclude standard archive formats & PDF (which has internal object
+  // compression) & generic binary stream
+  if (ct == "application/zip" || ct == "application/gzip" ||
+      ct == "application/x-gzip" || ct == "application/x-bzip2" ||
+      ct == "application/x-tar" || ct == "application/x-rar-compressed" ||
+      ct == "application/x-7z-compressed" || ct == "application/x-compress" ||
+      ct == "application/pdf" || ct == "application/octet-stream") {
+    return false;
+  }
+
+  return true;
+}
+
+struct StreamCompressor {
+  std::string type;
+  int level_or_quality;
+  bool initialized = false;
+
+  // Gzip state
+  z_stream zs;
+
+  // Brotli state
+  BrotliEncoderState *br_state = nullptr;
+
+  // Zstd state
+  ZSTD_CCtx *zstd_ctx = nullptr;
+
+  StreamCompressor(const std::string &t, int lvl)
+      : type(t), level_or_quality(lvl) {}
+
+  ~StreamCompressor() {
+    if (initialized) {
+      if (type == "gzip") {
+        deflateEnd(&zs);
+      } else if (type == "br") {
+        if (br_state) BrotliEncoderDestroyInstance(br_state);
+      } else if (type == "zstd") {
+        if (zstd_ctx) ZSTD_freeCCtx(zstd_ctx);
+      }
+    }
+  }
+
+  bool Init() {
+    if (type == "gzip") {
+      std::memset(&zs, 0, sizeof(zs));
+      if (deflateInit2(&zs, level_or_quality, Z_DEFLATED, 15 + 16, 8,
+                       Z_DEFAULT_STRATEGY) != Z_OK) {
+        return false;
+      }
+    } else if (type == "br") {
+      br_state = BrotliEncoderCreateInstance(nullptr, nullptr, nullptr);
+      if (!br_state) return false;
+      BrotliEncoderSetParameter(br_state, BROTLI_PARAM_QUALITY,
+                                level_or_quality);
+    } else if (type == "zstd") {
+      zstd_ctx = ZSTD_createCCtx();
+      if (!zstd_ctx) return false;
+      ZSTD_CCtx_setParameter(zstd_ctx, ZSTD_c_compressionLevel,
+                             level_or_quality);
+    }
+    initialized = true;
+    return true;
+  }
+
+  std::optional<std::string> Compress(const std::string &input_data,
+                                      bool is_last) {
+    if (!initialized && !Init()) return std::nullopt;
+
+    std::string output;
+    char outbuffer[65536];
+
+    if (type == "gzip") {
+      zs.next_in =
+          reinterpret_cast<Bytef *>(const_cast<char *>(input_data.data()));
+      zs.avail_in = static_cast<uInt>(input_data.size());
+
+      int flush = is_last ? Z_FINISH : Z_SYNC_FLUSH;
+      int ret;
+      do {
+        zs.next_out = reinterpret_cast<Bytef *>(outbuffer);
+        zs.avail_out = sizeof(outbuffer);
+        ret = deflate(&zs, flush);
+        if (ret == Z_BUF_ERROR) {
+          break;
+        }
+        if (ret < 0) {
+          return std::nullopt;
+        }
+        size_t written = sizeof(outbuffer) - zs.avail_out;
+        if (written > 0) {
+          output.append(outbuffer, written);
+        }
+      } while (zs.avail_out == 0 || (is_last && ret != Z_STREAM_END));
+
+      if (is_last && ret != Z_STREAM_END) {
+        return std::nullopt;
+      }
+      return output;
+    } else if (type == "br") {
+      size_t avail_in = input_data.size();
+      const uint8_t *next_in =
+          reinterpret_cast<const uint8_t *>(input_data.data());
+
+      BrotliEncoderOperation op =
+          is_last ? BROTLI_OPERATION_FINISH : BROTLI_OPERATION_FLUSH;
+      while (true) {
+        size_t avail_out = sizeof(outbuffer);
+        uint8_t *next_out = reinterpret_cast<uint8_t *>(outbuffer);
+        if (BrotliEncoderCompressStream(br_state, op, &avail_in, &next_in,
+                                        &avail_out, &next_out,
+                                        nullptr) == BROTLI_FALSE) {
+          return std::nullopt;
+        }
+        size_t written = sizeof(outbuffer) - avail_out;
+        if (written > 0) {
+          output.append(reinterpret_cast<char *>(outbuffer), written);
+        }
+        if (is_last) {
+          if (BrotliEncoderIsFinished(br_state) == BROTLI_TRUE) {
+            break;
+          }
+        } else {
+          if (avail_in == 0 &&
+              BrotliEncoderHasMoreOutput(br_state) == BROTLI_FALSE) {
+            break;
+          }
+        }
+      }
+      return output;
+    } else if (type == "zstd") {
+      ZSTD_inBuffer input = {input_data.data(), input_data.size(), 0};
+      ZSTD_EndDirective reset = is_last ? ZSTD_e_end : ZSTD_e_flush;
+      bool finished = false;
+      while (!finished) {
+        ZSTD_outBuffer out = {outbuffer, sizeof(outbuffer), 0};
+        size_t const ret = ZSTD_compressStream2(zstd_ctx, &out, &input, reset);
+        if (ZSTD_isError(ret)) {
+          return std::nullopt;
+        }
+        if (out.pos > 0) {
+          output.append(outbuffer, out.pos);
+        }
+        if (is_last) {
+          finished = (ret == 0);
+        } else {
+          finished = (input.pos == input.size && out.pos < sizeof(outbuffer));
+        }
+      }
+      return output;
+    }
+    return std::nullopt;
+  }
+};
 
 inline bool parse_url(const std::string &url, std::string &protocol,
                       std::string &host, uint16_t &port, std::string &path) {
@@ -1096,7 +1494,7 @@ inline std::string GetMimeType(const std::string &filepath) {
   std::transform(ext.begin(), ext.end(), ext.begin(), safe_tolower);
   if (ext == "html" || ext == "htm") return "text/html";
   if (ext == "css") return "text/css";
-  if (ext == "js") return "application/javascript";
+  if (ext == "js" || ext == "mjs") return "application/javascript";
   if (ext == "json") return "application/json";
   if (ext == "png") return "image/png";
   if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
@@ -1106,6 +1504,50 @@ inline std::string GetMimeType(const std::string &filepath) {
   if (ext == "ico") return "image/x-icon";
   if (ext == "xml") return "application/xml";
   if (ext == "pdf") return "application/pdf";
+  if (ext == "wasm") return "application/wasm";
+  if (ext == "yaml" || ext == "yml") return "application/x-yaml";
+  if (ext == "md") return "text/markdown";
+  if (ext == "csv") return "text/csv";
+  if (ext == "woff") return "font/woff";
+  if (ext == "woff2") return "font/woff2";
+  if (ext == "ttf") return "font/ttf";
+  if (ext == "otf") return "font/otf";
+  if (ext == "eot") return "application/vnd.ms-fontobject";
+  if (ext == "webmanifest") return "application/manifest+json";
+  if (ext == "webp") return "image/webp";
+  if (ext == "bmp") return "image/bmp";
+  if (ext == "tiff" || ext == "tif") return "image/tiff";
+  if (ext == "heic") return "image/heic";
+  if (ext == "heif") return "image/heif";
+  if (ext == "map") return "application/json";
+  if (ext == "xhtml") return "application/xhtml+xml";
+  if (ext == "zip") return "application/zip";
+  if (ext == "gz") return "application/gzip";
+  if (ext == "tgz") return "application/gzip";
+  if (ext == "tar") return "application/x-tar";
+  if (ext == "rar") return "application/x-rar-compressed";
+  if (ext == "7z") return "application/x-7z-compressed";
+  if (ext == "doc") return "application/msword";
+  if (ext == "docx")
+    return "application/"
+           "vnd.openxmlformats-officedocument.wordprocessingml.document";
+  if (ext == "xls") return "application/vnd.ms-excel";
+  if (ext == "xlsx")
+    return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  if (ext == "ppt") return "application/vnd.ms-powerpoint";
+  if (ext == "pptx")
+    return "application/"
+           "vnd.openxmlformats-officedocument.presentationml.presentation";
+  if (ext == "rtf") return "application/rtf";
+  if (ext == "ini" || ext == "conf" || ext == "config" || ext == "log")
+    return "text/plain";
+  if (ext == "sh") return "application/x-sh";
+  if (ext == "bat") return "text/plain";
+  if (ext == "mp4") return "video/mp4";
+  if (ext == "webm") return "video/webm";
+  if (ext == "mp3") return "audio/mpeg";
+  if (ext == "ogg") return "audio/ogg";
+  if (ext == "wav") return "audio/wav";
   return "application/octet-stream";
 }
 
@@ -1397,6 +1839,9 @@ class HttpServer {
     size_t file_bytes_in_flight = 0;
     size_t file_bytes_remaining = std::string::npos;
     bool should_close_after_file = false;
+    bool is_compressed_stream = false;
+    bool compressed_stream_finished = false;
+    std::shared_ptr<StreamCompressor> compressor;
 
     bool header_parsed = false;
     HttpRequest request;
@@ -1769,6 +2214,36 @@ class HttpServer {
   }
   std::chrono::milliseconds GetIdleTimeout() const { return idle_timeout_; }
 
+  void SetBrotliQuality(int quality) {
+    if (quality < 0 || quality > 11) {
+      throw std::invalid_argument(
+          "Brotli quality must be in the range [0, 11]");
+    }
+    brotli_quality_ = quality;
+  }
+  int GetBrotliQuality() const { return brotli_quality_; }
+
+  void SetZstdCompressionLevel(int level) {
+    if (level < ZSTD_minCLevel() || level > ZSTD_maxCLevel()) {
+      throw std::invalid_argument("Zstd level must be in the range [" +
+                                  std::to_string(ZSTD_minCLevel()) + ", " +
+                                  std::to_string(ZSTD_maxCLevel()) + "]");
+    }
+    zstd_level_ = level;
+  }
+  int GetZstdCompressionLevel() const { return zstd_level_; }
+
+  void SetGzipCompressionLevel(int level) {
+    if (level < -1 || level > 9) {
+      throw std::invalid_argument("Gzip level must be in the range [-1, 9]");
+    }
+    gzip_level_ = level;
+  }
+  int GetGzipCompressionLevel() const { return gzip_level_; }
+
+  void SetMinCompressionSize(size_t size) { min_compression_size_ = size; }
+  size_t GetMinCompressionSize() const { return min_compression_size_; }
+
  private:
   struct Route {
     std::string method;
@@ -1822,6 +2297,10 @@ class HttpServer {
   size_t max_header_size_ = 8192;
   size_t max_body_size_ = 10 * 1024 * 1024;
   std::chrono::milliseconds idle_timeout_{10};
+  int brotli_quality_ = 4;
+  int zstd_level_ = 3;
+  int gzip_level_ = Z_DEFAULT_COMPRESSION;
+  size_t min_compression_size_ = 1024;
 
   void PumpFileTransfer(uint64_t session_id,
                         std::shared_ptr<SessionState> session) {
@@ -1860,25 +2339,88 @@ class HttpServer {
       session->file_stream->read(stream_buffer.data(), stream_buffer.size());
       std::streamsize bytes_read = session->file_stream->gcount();
       if (bytes_read > 0) {
-        std::string chunk(stream_buffer.data(), bytes_read);
-        if (listener_->Send(session_id, chunk)) {
-          session->file_bytes_in_flight += bytes_read;
-          if (session->file_bytes_remaining != std::string::npos) {
-            session->file_bytes_remaining -= bytes_read;
+        if (session->file_bytes_remaining != std::string::npos) {
+          session->file_bytes_remaining -= bytes_read;
+        }
+
+        std::string raw_chunk(stream_buffer.data(), bytes_read);
+
+        if (session->is_compressed_stream) {
+          bool is_eof =
+              (!*session->file_stream || session->file_stream->eof() ||
+               session->file_bytes_remaining == 0);
+          auto compressed_opt =
+              session->compressor->Compress(raw_chunk, is_eof);
+          if (!compressed_opt.has_value()) {
+            session->is_streaming_file = false;
+            session->file_stream.reset();
+            session->compressor.reset();
+            return;
+          }
+          std::string compressed = std::move(*compressed_opt);
+          if (!compressed.empty()) {
+            std::ostringstream chunk_stream;
+            chunk_stream << std::hex << compressed.size() << "\r\n"
+                         << compressed << "\r\n";
+            std::string formatted_chunk = chunk_stream.str();
+            if (listener_->Send(session_id, formatted_chunk)) {
+              session->file_bytes_in_flight += formatted_chunk.size();
+            } else {
+              break;
+            }
+          }
+          if (is_eof) {
+            std::string final_chunk = "0\r\n\r\n";
+            if (listener_->Send(session_id, final_chunk)) {
+              session->file_bytes_in_flight += final_chunk.size();
+            }
+            session->compressed_stream_finished = true;
+            break;
           }
         } else {
-          break;
+          if (listener_->Send(session_id, raw_chunk)) {
+            session->file_bytes_in_flight += bytes_read;
+          } else {
+            break;
+          }
         }
       } else {
         break;
       }
     }
 
-    if (!*session->file_stream || !session->file_stream->is_open() ||
-        session->file_stream->eof() || session->file_bytes_remaining == 0) {
+    bool is_done =
+        (!*session->file_stream || !session->file_stream->is_open() ||
+         session->file_stream->eof() || session->file_bytes_remaining == 0);
+
+    if (is_done && session->is_compressed_stream &&
+        !session->compressed_stream_finished) {
+      auto compressed_opt = session->compressor->Compress("", true);
+      if (compressed_opt.has_value()) {
+        std::string compressed = std::move(*compressed_opt);
+        if (!compressed.empty()) {
+          std::ostringstream chunk_stream;
+          chunk_stream << std::hex << compressed.size() << "\r\n"
+                       << compressed << "\r\n";
+          std::string formatted_chunk = chunk_stream.str();
+          if (listener_->Send(session_id, formatted_chunk)) {
+            session->file_bytes_in_flight += formatted_chunk.size();
+          }
+        }
+        std::string final_chunk = "0\r\n\r\n";
+        if (listener_->Send(session_id, final_chunk)) {
+          session->file_bytes_in_flight += final_chunk.size();
+        }
+      }
+      session->compressed_stream_finished = true;
+    }
+
+    if (is_done && (!session->is_compressed_stream ||
+                    session->compressed_stream_finished)) {
       if (session->file_bytes_in_flight == 0) {
         session->is_streaming_file = false;
         session->file_stream.reset();
+        session->compressor.reset();
         if (session->should_close_after_file) {
           listener_->Disconnect(session_id);
         }
@@ -2444,15 +2986,40 @@ class HttpServer {
         }
 
         std::string accept_encoding = request.GetHeader("Accept-Encoding");
-        std::transform(accept_encoding.begin(), accept_encoding.end(),
-                       accept_encoding.begin(), safe_tolower);
-        if (accept_encoding.find("gzip") != std::string::npos &&
-            !response.body.empty() &&
-            response.headers.count("Content-Encoding") == 0) {
-          auto compressed = gzip_compress(response.body);
+        std::string best_encoding = negotiate_encoding(accept_encoding);
+
+        // For file responses, check if we should compress them.
+        // We only compress full file transfers (status 200 OK) with
+        // compressible MIME types.
+        if (response.is_file && response.status_code == 200 &&
+            best_encoding != "identity" &&
+            response.headers.count("Content-Encoding") == 0 &&
+            is_compressible_mimetype(response.GetHeader("Content-Type"))) {
+          std::error_code size_ec;
+          size_t file_size =
+              std::filesystem::file_size(response.file_path, size_ec);
+          if (!size_ec && file_size >= min_compression_size_) {
+            response.headers["Content-Encoding"] = best_encoding;
+            response.headers["Transfer-Encoding"] = "chunked";
+            response.headers.erase("content-length");
+          }
+        }
+
+        if (best_encoding != "identity" &&
+            response.body.size() >= min_compression_size_ &&
+            response.headers.count("Content-Encoding") == 0 &&
+            is_compressible_mimetype(response.GetHeader("Content-Type"))) {
+          std::optional<std::string> compressed;
+          if (best_encoding == "zstd") {
+            compressed = zstd_compress(response.body, zstd_level_);
+          } else if (best_encoding == "br") {
+            compressed = brotli_compress(response.body, brotli_quality_);
+          } else if (best_encoding == "gzip") {
+            compressed = gzip_compress(response.body, gzip_level_);
+          }
           if (compressed.has_value()) {
             response.body = std::move(*compressed);
-            response.headers["Content-Encoding"] = "gzip";
+            response.headers["Content-Encoding"] = best_encoding;
             response.headers.erase("content-length");
           }
         }
@@ -2479,7 +3046,7 @@ class HttpServer {
                         : 0))
                 : response_data.size();
 
-        if (should_close && !upgrade_to_ws) {
+        if (should_close && !upgrade_to_ws && !response.is_file) {
           std::lock_guard<std::mutex> lock(close_mutex_);
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = total_sent;
@@ -2499,6 +3066,29 @@ class HttpServer {
                                                 : std::string::npos;
             session->file_bytes_in_flight = headers_data.size();
             session->should_close_after_file = should_close && !upgrade_to_ws;
+
+            std::string content_encoding = "";
+            auto ce_it = response.headers.find("Content-Encoding");
+            if (ce_it != response.headers.end()) {
+              content_encoding = ce_it->second;
+            }
+            if (!content_encoding.empty() && content_encoding != "identity") {
+              int level = 3;
+              if (content_encoding == "zstd")
+                level = zstd_level_;
+              else if (content_encoding == "br")
+                level = brotli_quality_;
+              else if (content_encoding == "gzip")
+                level = gzip_level_;
+              session->compressor =
+                  std::make_shared<StreamCompressor>(content_encoding, level);
+              session->is_compressed_stream = true;
+              session->compressed_stream_finished = false;
+            } else {
+              session->is_compressed_stream = false;
+              session->compressor.reset();
+            }
+
             PumpFileTransfer(session_id, session);
           }
         } else {
@@ -3292,19 +3882,21 @@ class HttpClient {
             client_chunk_parsed_up_to = body_start_idx;
             http_response.body.clear();
           }
+          std::function<void(const std::string &)> chunk_cb;
+          if (on_chunk) {
+            chunk_cb = [&](const std::string &chunk) {
+              HttpResponse temp_res;
+              temp_res.status_code = status_code;
+              temp_res.status_message = req.status_message;
+              temp_res.headers = req.headers;
+              temp_res.multi_headers = req.multi_headers;
+              on_chunk(temp_res, chunk, false);
+            };
+          }
           bool completed = ParseChunkedBodyIncremental(
               buffer_, client_chunk_parsed_up_to, http_response.body,
               chunked_bad_request, max_body_size_, chunked_payload_too_large,
-              [&](const std::string &chunk) {
-                if (on_chunk) {
-                  HttpResponse temp_res;
-                  temp_res.status_code = status_code;
-                  temp_res.status_message = req.status_message;
-                  temp_res.headers = req.headers;
-                  temp_res.multi_headers = req.multi_headers;
-                  on_chunk(temp_res, chunk, false);
-                }
-              });
+              chunk_cb);
 
           if (on_chunk && client_chunk_parsed_up_to > body_start_idx) {
             buffer_.erase(buffer_.begin() + body_start_idx,
@@ -3491,9 +4083,21 @@ class HttpClient {
     std::string content_encoding = http_response.GetHeader("Content-Encoding");
     std::transform(content_encoding.begin(), content_encoding.end(),
                    content_encoding.begin(), safe_tolower);
-    if (content_encoding.find("gzip") != std::string::npos &&
-        !http_response.body.empty()) {
-      auto decompressed = gzip_decompress(http_response.body);
+    size_t start_idx = content_encoding.find_first_not_of(" \t\r\n");
+    if (start_idx != std::string::npos) {
+      size_t end_idx = content_encoding.find_last_not_of(" \t\r\n");
+      content_encoding =
+          content_encoding.substr(start_idx, end_idx - start_idx + 1);
+    }
+    if (!http_response.body.empty()) {
+      std::optional<std::string> decompressed;
+      if (content_encoding == "zstd") {
+        decompressed = zstd_decompress(http_response.body);
+      } else if (content_encoding == "br") {
+        decompressed = brotli_decompress(http_response.body);
+      } else if (content_encoding == "gzip") {
+        decompressed = gzip_decompress(http_response.body);
+      }
       if (decompressed.has_value()) {
         http_response.body = std::move(*decompressed);
       }
@@ -3556,7 +4160,7 @@ class HttpClient {
       request_stream << "Connection: keep-alive\r\n";
     }
     if (!has_accept_encoding) {
-      request_stream << "Accept-Encoding: gzip\r\n";
+      request_stream << "Accept-Encoding: zstd, br, gzip\r\n";
     }
 
     if (is_chunked) {
@@ -3756,7 +4360,7 @@ class HttpClient {
       request_stream << "Connection: keep-alive\r\n";
     }
     if (!has_accept_encoding) {
-      request_stream << "Accept-Encoding: gzip\r\n";
+      request_stream << "Accept-Encoding: zstd, br, gzip\r\n";
     }
 
     if (!body.empty()) {

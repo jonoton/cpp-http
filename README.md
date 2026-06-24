@@ -18,6 +18,7 @@
 - **CORS Middleware:** Built-in configurable Cross-Origin Resource Sharing (CORS) middleware to manage preflight requests and response headers.
 - **Rate Limiting:** Built-in IP-based rate limiting middleware with sliding window duration and automatic `Retry-After` headers.
 - **Response Caching:** Lightweight cache wrapper for `GET` route handlers with configurable cache duration and query parameter normalization.
+- **Transparent Compression:** Out-of-the-box transparent compression and decompression supporting Zstandard (`zstd`), Brotli (`br`), and Gzip (`gzip`), with prioritized encoding negotiation (`zstd > br > gzip`) and dynamically adjustable quality/compression levels on the fly.
 - **Reliability & DoS Protection:** Exception-safe parsing, configurable max header block limits, and strict payload/body size limitations.
 - **WebSocket Support:** Fully integrated server-side WebSocket routing and client-side `WebSocketClient` with fragmentation, continuation, and ping/pong keep-alives.
 - **SSL/TLS Support:** Out-of-the-box HTTPS, WSS, and client-side SSL support through OpenSSL.

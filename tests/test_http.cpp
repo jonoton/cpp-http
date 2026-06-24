@@ -874,6 +874,7 @@ TEST(HttpMultipartTest, ParseMultipartContent) {
 
 TEST(HttpCompressionTest, GzipServerAndClient) {
   cpphttp::HttpServer server(8106);
+  server.SetMinCompressionSize(0);
 
   server.Get("/compress", [](const cpphttp::HttpRequest &req) {
     return cpphttp::HttpResponse::Plain(
@@ -885,7 +886,7 @@ TEST(HttpCompressionTest, GzipServerAndClient) {
 
   // Client transparently decompresses
   cpphttp::HttpClient client("127.0.0.1", 8106);
-  auto res = client.Get("/compress");
+  auto res = client.Get("/compress", {{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(res.status_code, 200);
   EXPECT_EQ(res.body,
             "This is a highly compressible message!!! This is a highly "
@@ -893,6 +894,154 @@ TEST(HttpCompressionTest, GzipServerAndClient) {
 
   // Verify it was actually compressed (Content-Encoding header present)
   EXPECT_EQ(res.headers.at("Content-Encoding"), "gzip");
+
+  server.Stop();
+}
+
+TEST(HttpCompressionTest, BrotliServerAndClient) {
+  cpphttp::HttpServer server(8146);
+  server.SetMinCompressionSize(0);
+  server.Get("/compress", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain(
+        "This is a highly compressible message!!! This is a highly "
+        "compressible message!!!");
+  });
+  server.Start();
+
+  cpphttp::HttpClient client("127.0.0.1", 8146);
+  auto res = client.SendRequest("GET", "/compress", "",
+                                cpphttp::HeaderMap{{"Accept-Encoding", "br"}});
+  EXPECT_EQ(res.status_code, 200);
+  EXPECT_EQ(res.body,
+            "This is a highly compressible message!!! This is a highly "
+            "compressible message!!!");
+  EXPECT_EQ(res.headers.at("Content-Encoding"), "br");
+
+  server.Stop();
+}
+
+TEST(HttpCompressionTest, ZstdServerAndClient) {
+  cpphttp::HttpServer server(8147);
+  server.SetMinCompressionSize(0);
+  server.Get("/compress", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain(
+        "This is a highly compressible message!!! This is a highly "
+        "compressible message!!!");
+  });
+  server.Start();
+
+  cpphttp::HttpClient client("127.0.0.1", 8147);
+  auto res = client.Get("/compress");
+  EXPECT_EQ(res.status_code, 200);
+  EXPECT_EQ(res.body,
+            "This is a highly compressible message!!! This is a highly "
+            "compressible message!!!");
+  EXPECT_EQ(res.headers.at("Content-Encoding"), "zstd");
+
+  server.Stop();
+}
+
+TEST(HttpCompressionTest, ConfigurableQualityAndLevel) {
+  cpphttp::HttpServer server(8148);
+  server.SetMinCompressionSize(0);
+  server.SetBrotliQuality(6);
+  server.SetZstdCompressionLevel(5);
+  server.SetGzipCompressionLevel(1);
+  EXPECT_EQ(server.GetBrotliQuality(), 6);
+  EXPECT_EQ(server.GetZstdCompressionLevel(), 5);
+  EXPECT_EQ(server.GetGzipCompressionLevel(), 1);
+
+  // Test invalid bounds
+  EXPECT_THROW(server.SetBrotliQuality(-1), std::invalid_argument);
+  EXPECT_THROW(server.SetBrotliQuality(12), std::invalid_argument);
+  EXPECT_THROW(server.SetZstdCompressionLevel(ZSTD_minCLevel() - 1),
+               std::invalid_argument);
+  EXPECT_THROW(server.SetZstdCompressionLevel(ZSTD_maxCLevel() + 1),
+               std::invalid_argument);
+  EXPECT_THROW(server.SetGzipCompressionLevel(-2), std::invalid_argument);
+  EXPECT_THROW(server.SetGzipCompressionLevel(10), std::invalid_argument);
+
+  server.Get("/compress", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain(
+        "This is a highly compressible message!!! This is a highly "
+        "compressible message!!!");
+  });
+  server.Start();
+
+  cpphttp::HttpClient client("127.0.0.1", 8148);
+  auto res_zstd = client.Get("/compress");
+  EXPECT_EQ(res_zstd.status_code, 200);
+  EXPECT_EQ(res_zstd.body,
+            "This is a highly compressible message!!! This is a highly "
+            "compressible message!!!");
+  EXPECT_EQ(res_zstd.headers.at("Content-Encoding"), "zstd");
+
+  auto res_br = client.SendRequest(
+      "GET", "/compress", "", cpphttp::HeaderMap{{"Accept-Encoding", "br"}});
+  EXPECT_EQ(res_br.status_code, 200);
+  EXPECT_EQ(res_br.body,
+            "This is a highly compressible message!!! This is a highly "
+            "compressible message!!!");
+  EXPECT_EQ(res_br.headers.at("Content-Encoding"), "br");
+
+  auto res_gzip = client.Get("/compress", {{"Accept-Encoding", "gzip"}});
+  EXPECT_EQ(res_gzip.status_code, 200);
+  EXPECT_EQ(res_gzip.body,
+            "This is a highly compressible message!!! This is a highly "
+            "compressible message!!!");
+  EXPECT_EQ(res_gzip.headers.at("Content-Encoding"), "gzip");
+
+  server.Stop();
+}
+
+TEST(HttpCompressionTest, MimetypeAndSizeLimits) {
+  cpphttp::HttpServer server(8149);
+
+  // 1. Text route under 1024 bytes -> should NOT be compressed
+  server.Get("/small-text", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain("Small plain text payload");
+  });
+
+  // 2. Text route over 1024 bytes -> should be compressed
+  server.Get("/large-text", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain(std::string(1500, 'A'));
+  });
+
+  // 3. Binary route over 1024 bytes -> should NOT be compressed
+  server.Get("/binary", [](const cpphttp::HttpRequest &req) {
+    cpphttp::HttpResponse res =
+        cpphttp::HttpResponse::Plain(std::string(1500, 'B'));
+    res.headers["Content-Type"] = "image/png";
+    return res;
+  });
+
+  server.Start();
+
+  cpphttp::HttpClient client("127.0.0.1", 8149);
+
+  // Check 1: Small text (no Content-Encoding header)
+  {
+    auto res = client.Get("/small-text");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body, "Small plain text payload");
+    EXPECT_EQ(res.headers.find("Content-Encoding"), res.headers.end());
+  }
+
+  // Check 2: Large text (compressed with zstd)
+  {
+    auto res = client.Get("/large-text");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body, std::string(1500, 'A'));
+    EXPECT_EQ(res.headers.at("Content-Encoding"), "zstd");
+  }
+
+  // Check 3: Binary png (no Content-Encoding header)
+  {
+    auto res = client.Get("/binary");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body, std::string(1500, 'B'));
+    EXPECT_EQ(res.headers.find("Content-Encoding"), res.headers.end());
+  }
 
   server.Stop();
 }
@@ -1173,6 +1322,7 @@ TEST(HttpUtilityTest, IPv6UrlParsing) {
 
 TEST(HttpIntegrationTest, AutomaticHEADFallbackAndBodyStripping) {
   cpphttp::HttpServer server(8112);
+  server.SetMinCompressionSize(0);
   server.Get("/test", [](const cpphttp::HttpRequest &req) {
     return cpphttp::HttpResponse::Plain("Hello World");
   });
@@ -1181,7 +1331,8 @@ TEST(HttpIntegrationTest, AutomaticHEADFallbackAndBodyStripping) {
   cpphttp::HttpClient client("127.0.0.1", 8112);
   // With default Accept-Encoding: gzip, HEAD should return compressed headers
   // matching GET
-  auto res = client.SendRequest("HEAD", "/test");
+  auto res = client.SendRequest(
+      "HEAD", "/test", "", cpphttp::HeaderMap{{"Accept-Encoding", "gzip"}});
   EXPECT_EQ(res.status_code, 200);
   EXPECT_EQ(res.body, "");
   EXPECT_EQ(res.headers.at("Content-Length"), "31");
@@ -2185,6 +2336,52 @@ TEST(HttpCompressionTest, GzipFailurePaths) {
   EXPECT_FALSE(decompressed.has_value());
 }
 
+TEST(HttpCompressionTest, BrotliAndZstdFailurePaths) {
+  std::string corrupt_data = "this is corrupt data!";
+  auto decompressed_br = cpphttp::brotli_decompress(corrupt_data);
+  EXPECT_FALSE(decompressed_br.has_value());
+
+  auto decompressed_zstd = cpphttp::zstd_decompress(corrupt_data);
+  EXPECT_FALSE(decompressed_zstd.has_value());
+}
+
+TEST(HttpCompressionTest, BrotliRoundTrip) {
+  std::string original =
+      "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod "
+      "tempor incididunt ut labore et dolore magna aliqua.";
+  auto compressed = cpphttp::brotli_compress(original);
+  ASSERT_TRUE(compressed.has_value());
+  EXPECT_LT(compressed->size(), original.size());
+
+  auto decompressed = cpphttp::brotli_decompress(*compressed);
+  ASSERT_TRUE(decompressed.has_value());
+  EXPECT_EQ(*decompressed, original);
+}
+
+TEST(HttpCompressionTest, ZstdRoundTrip) {
+  std::string original =
+      "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod "
+      "tempor incididunt ut labore et dolore magna aliqua.";
+  auto compressed = cpphttp::zstd_compress(original);
+  ASSERT_TRUE(compressed.has_value());
+  EXPECT_LT(compressed->size(), original.size());
+
+  auto decompressed = cpphttp::zstd_decompress(*compressed);
+  ASSERT_TRUE(decompressed.has_value());
+  EXPECT_EQ(*decompressed, original);
+}
+
+TEST(HttpCompressionTest, NegotiateEncoding) {
+  EXPECT_EQ(cpphttp::negotiate_encoding("zstd, br, gzip"), "zstd");
+  EXPECT_EQ(cpphttp::negotiate_encoding("br, gzip"), "br");
+  EXPECT_EQ(cpphttp::negotiate_encoding("gzip"), "gzip");
+  EXPECT_EQ(cpphttp::negotiate_encoding("zstd;q=0.5, br;q=0.8, gzip;q=0.1"),
+            "br");
+  EXPECT_EQ(cpphttp::negotiate_encoding("deflate"), "identity");
+  EXPECT_EQ(cpphttp::negotiate_encoding(""), "identity");
+  EXPECT_EQ(cpphttp::negotiate_encoding("*"), "zstd");
+}
+
 TEST(HttpUtilityExtendedTest, VersionString) {
   std::string ver = cpphttp::version();
   EXPECT_FALSE(ver.empty());
@@ -3015,6 +3212,55 @@ TEST(HttpStreamingTest, DownloadLargeFileStream) {
   EXPECT_EQ(final_res.status_code, 200);
   EXPECT_EQ(received_bytes, std::filesystem::file_size(temp_filename));
   EXPECT_GT(chunk_count, 0);
+
+  server.Stop();
+  std::filesystem::remove(temp_filename);
+}
+
+TEST(HttpStreamingTest, DownloadLargeFileStreamWithCompression) {
+  // 1. Create a compressible temporary file (using a repeating pattern)
+  std::string temp_filename = "temp_download_compress_5mb.txt";
+  std::string file_content;
+  {
+    std::ofstream outfile(temp_filename, std::ios::binary);
+    std::string pattern =
+        "This is a highly compressible line of text designed to test streaming "
+        "compression! ";
+    for (int i = 0; i < 60000; ++i) {  // ~5MB
+      outfile.write(pattern.data(), pattern.size());
+      file_content.append(pattern);
+    }
+  }
+
+  uint16_t port = 8153;
+  cpphttp::HttpServer server(port);
+  server.Get("/download", [temp_filename](const cpphttp::HttpRequest &req) {
+    cpphttp::HttpResponse res;
+    res.status_code = 200;
+    res.status_message = "OK";
+    res.is_file = true;
+    res.file_path = temp_filename;
+    // Compressible MIME type
+    res.headers["Content-Type"] = "text/plain";
+    res.headers["Content-Length"] =
+        std::to_string(std::filesystem::file_size(temp_filename));
+    return res;
+  });
+  server.Start();
+
+  // Test with gzip, br, and zstd
+  std::vector<std::string> encodings = {"gzip", "br", "zstd"};
+  for (const auto &enc : encodings) {
+    cpphttp::HttpClient client("127.0.0.1", port);
+
+    auto res = client.SendRequest("GET", "/download", "",
+                                  cpphttp::HeaderMap{{"Accept-Encoding", enc}});
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body.size(), file_content.size());
+    EXPECT_EQ(res.body, file_content);
+    EXPECT_EQ(res.headers.at("Content-Encoding"), enc);
+    EXPECT_EQ(res.headers.at("Transfer-Encoding"), "chunked");
+  }
 
   server.Stop();
   std::filesystem::remove(temp_filename);

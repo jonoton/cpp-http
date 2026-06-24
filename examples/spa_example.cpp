@@ -78,14 +78,15 @@ std::string ExtractJsonString(const std::string &json, const std::string &key) {
 }
 
 int main() {
-  // Create a dummy SPA directory structure for the example
   std::string spa_dir = "./demo_spa_dist";
-  std::filesystem::create_directories(spa_dir);
-  std::filesystem::create_directories(spa_dir + "/static/css");
+  try {
+    // Create a dummy SPA directory structure for the example
+    std::filesystem::create_directories(spa_dir);
+    std::filesystem::create_directories(spa_dir + "/static/css");
 
-  {
-    std::ofstream out(spa_dir + "/index.html");
-    out << R"html(<!DOCTYPE html>
+    {
+      std::ofstream out(spa_dir + "/index.html");
+      out << R"html(<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -398,11 +399,11 @@ int main() {
 </body>
 </html>
 )html";
-  }
+    }
 
-  {
-    std::ofstream out(spa_dir + "/static/css/style.css");
-    out << R"css(:root {
+    {
+      std::ofstream out(spa_dir + "/static/css/style.css");
+      out << R"css(:root {
   --bg: #0b0d19;
   --panel: rgba(30, 41, 59, 0.45);
   --border: rgba(255, 255, 255, 0.08);
@@ -796,144 +797,153 @@ body {
   font-family: monospace;
 }
 )css";
-  }
-
-  // Run the HTTP server
-  uint16_t port = 8080;
-  cpphttp::HttpServer server(port);
-
-  // Add authentication middleware for all API routes except login and me status
-  // check
-  server.Use("/api/", [](cpphttp::HttpRequest &req,
-                         cpphttp::HttpResponse &res) {
-    if (req.path == "/api/login" || req.path == "/api/me") {
-      return true;  // Bypass authentication check for login and me status check
     }
 
-    std::string cookie_header = req.GetHeader("Cookie");
-    std::string token = GetCookieValue(cookie_header, "session_token");
+    // Run the HTTP server
+    uint16_t port = 8085;
+    cpphttp::HttpServer server(port);
 
-    bool authenticated = false;
-    {
-      std::lock_guard<std::mutex> lock(sessions_mutex);
-      if (!token.empty() &&
-          active_sessions.find(token) != active_sessions.end()) {
-        authenticated = true;
+    // Add authentication middleware for all API routes except login and me
+    // status check
+    server.Use("/api/", [](cpphttp::HttpRequest &req,
+                           cpphttp::HttpResponse &res) {
+      if (req.path == "/api/login" || req.path == "/api/me") {
+        return true;  // Bypass authentication check for login and me status
+                      // check
       }
-    }
 
-    if (!authenticated) {
-      res = cpphttp::HttpResponse::Json("{\"error\": \"Unauthorized\"}", 401);
-      return false;  // Interrupt pipeline
-    }
+      std::string cookie_header = req.GetHeader("Cookie");
+      std::string token = GetCookieValue(cookie_header, "session_token");
 
-    return true;
-  });
-
-  // POST /api/login
-  server.Post("/api/login", [](const cpphttp::HttpRequest &req) {
-    std::string username = ExtractJsonString(req.body, "username");
-    std::string password = ExtractJsonString(req.body, "password");
-
-    if (username == "admin" && password == "password123") {
-      std::string token = GenerateSessionToken();
+      bool authenticated = false;
       {
         std::lock_guard<std::mutex> lock(sessions_mutex);
-        active_sessions.insert(token);
+        if (!token.empty() &&
+            active_sessions.find(token) != active_sessions.end()) {
+          authenticated = true;
+        }
+      }
+
+      if (!authenticated) {
+        res = cpphttp::HttpResponse::Json("{\"error\": \"Unauthorized\"}", 401);
+        return false;  // Interrupt pipeline
+      }
+
+      return true;
+    });
+
+    // POST /api/login
+    server.Post("/api/login", [](const cpphttp::HttpRequest &req) {
+      std::string username = ExtractJsonString(req.body, "username");
+      std::string password = ExtractJsonString(req.body, "password");
+
+      if (username == "admin" && password == "password123") {
+        std::string token = GenerateSessionToken();
+        {
+          std::lock_guard<std::mutex> lock(sessions_mutex);
+          active_sessions.insert(token);
+        }
+
+        cpphttp::HttpResponse res =
+            cpphttp::HttpResponse::Json("{\"success\": true}", 200);
+        res.headers["Set-Cookie"] =
+            "session_token=" + token + "; Path=/; HttpOnly; SameSite=Strict";
+        return res;
+      }
+
+      return cpphttp::HttpResponse::Json(
+          "{\"success\": false, \"error\": \"Invalid username or password\"}",
+          400);
+    });
+
+    // POST /api/logout
+    server.Post("/api/logout", [](const cpphttp::HttpRequest &req) {
+      std::string cookie_header = req.GetHeader("Cookie");
+      std::string token = GetCookieValue(cookie_header, "session_token");
+
+      if (!token.empty()) {
+        std::lock_guard<std::mutex> lock(sessions_mutex);
+        active_sessions.erase(token);
       }
 
       cpphttp::HttpResponse res =
           cpphttp::HttpResponse::Json("{\"success\": true}", 200);
       res.headers["Set-Cookie"] =
-          "session_token=" + token + "; Path=/; HttpOnly; SameSite=Strict";
+          "session_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
       return res;
-    }
+    });
 
-    return cpphttp::HttpResponse::Json(
-        "{\"success\": false, \"error\": \"Invalid username or password\"}",
-        400);
-  });
+    // GET /api/me
+    server.Get("/api/me", [](const cpphttp::HttpRequest &req) {
+      std::string cookie_header = req.GetHeader("Cookie");
+      std::string token = GetCookieValue(cookie_header, "session_token");
 
-  // POST /api/logout
-  server.Post("/api/logout", [](const cpphttp::HttpRequest &req) {
-    std::string cookie_header = req.GetHeader("Cookie");
-    std::string token = GetCookieValue(cookie_header, "session_token");
-
-    if (!token.empty()) {
-      std::lock_guard<std::mutex> lock(sessions_mutex);
-      active_sessions.erase(token);
-    }
-
-    cpphttp::HttpResponse res =
-        cpphttp::HttpResponse::Json("{\"success\": true}", 200);
-    res.headers["Set-Cookie"] =
-        "session_token=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
-    return res;
-  });
-
-  // GET /api/me
-  server.Get("/api/me", [](const cpphttp::HttpRequest &req) {
-    std::string cookie_header = req.GetHeader("Cookie");
-    std::string token = GetCookieValue(cookie_header, "session_token");
-
-    bool authenticated = false;
-    {
-      std::lock_guard<std::mutex> lock(sessions_mutex);
-      if (!token.empty() &&
-          active_sessions.find(token) != active_sessions.end()) {
-        authenticated = true;
+      bool authenticated = false;
+      {
+        std::lock_guard<std::mutex> lock(sessions_mutex);
+        if (!token.empty() &&
+            active_sessions.find(token) != active_sessions.end()) {
+          authenticated = true;
+        }
       }
-    }
 
-    if (authenticated) {
-      return cpphttp::HttpResponse::Json(
-          "{\"authenticated\": true, \"username\": \"admin\"}", 200);
-    } else {
-      return cpphttp::HttpResponse::Json("{\"authenticated\": false}", 200);
-    }
-  });
+      if (authenticated) {
+        return cpphttp::HttpResponse::Json(
+            "{\"authenticated\": true, \"username\": \"admin\"}", 200);
+      } else {
+        return cpphttp::HttpResponse::Json("{\"authenticated\": false}", 200);
+      }
+    });
 
-  // GET /api/dashboard-data
-  server.Get("/api/dashboard-data", [](const cpphttp::HttpRequest &req) {
-    size_t sessions_count = 0;
-    {
-      std::lock_guard<std::mutex> lock(sessions_mutex);
-      sessions_count = active_sessions.size();
-    }
+    // GET /api/dashboard-data
+    server.Get("/api/dashboard-data", [](const cpphttp::HttpRequest &req) {
+      size_t sessions_count = 0;
+      {
+        std::lock_guard<std::mutex> lock(sessions_mutex);
+        sessions_count = active_sessions.size();
+      }
 
-    std::ostringstream json;
-    json << "{"
-         << "\"uptime\": \"2 hours, 14 mins\","
-         << "\"activeSessions\": " << sessions_count << ","
-         << "\"totalRequests\": 421,"
-         << "\"logs\": ["
-         << "  {\"time\": \"18:40:02\", \"event\": \"User admin logged in "
-            "successfully\", \"level\": \"info\"},"
-         << "  {\"time\": \"18:38:15\", \"event\": \"Failed login attempt from "
-            "client IP 127.0.0.1\", \"level\": \"warning\"},"
-         << "  {\"time\": \"18:30:00\", \"event\": \"Server started on port "
-            "8080\", \"level\": \"info\"}"
-         << "]"
-         << "}";
-    return cpphttp::HttpResponse::Json(json.str(), 200);
-  });
+      std::ostringstream json;
+      json << "{"
+           << "\"uptime\": \"2 hours, 14 mins\","
+           << "\"activeSessions\": " << sessions_count << ","
+           << "\"totalRequests\": 421,"
+           << "\"logs\": ["
+           << "  {\"time\": \"18:40:02\", \"event\": \"User admin logged in "
+              "successfully\", \"level\": \"info\"},"
+           << "  {\"time\": \"18:38:15\", \"event\": \"Failed login attempt "
+              "from "
+              "client IP 127.0.0.1\", \"level\": \"warning\"},"
+           << "  {\"time\": \"18:30:00\", \"event\": \"Server started on port "
+              "8080\", \"level\": \"info\"}"
+           << "]"
+           << "}";
+      return cpphttp::HttpResponse::Json(json.str(), 200);
+    });
 
-  // Serve static files with SPA mode enabled
-  server.StaticDir("/app", spa_dir, true);
+    // Serve static files with SPA mode enabled
+    server.StaticDir("/app", spa_dir, true);
 
-  std::cout << "Starting SPA example server on port " << port << "...\n";
-  std::cout << "Visit http://localhost:" << port << "/app/ in your browser.\n";
+    std::cout << "Starting SPA example server on port " << port << "...\n";
+    std::cout << "Visit http://localhost:" << port
+              << "/app/ in your browser.\n";
 
-  server.Start();
+    server.Start();
 
-  // Keep the main thread alive while the background server thread runs
-  std::cout << "Press Enter to exit..." << std::endl;
-  std::cin.get();
+    // Keep the main thread alive while the background server thread runs
+    std::cout << "Press Enter to exit..." << std::endl;
+    std::cin.get();
 
-  server.Stop();
+    server.Stop();
 
-  // Cleanup
-  std::filesystem::remove_all(spa_dir);
+    // Cleanup
+    std::filesystem::remove_all(spa_dir);
+  } catch (const std::exception &e) {
+    std::cerr << "Fatal Exception in main: " << e.what() << std::endl;
+    std::error_code ec;
+    std::filesystem::remove_all(spa_dir, ec);
+    return 1;
+  }
 
   return 0;
 }

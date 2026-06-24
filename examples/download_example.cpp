@@ -300,6 +300,8 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
       margin-bottom: 0.4rem;
       word-break: break-all;
     }
+)html"
+                      R"html(
     .log-time {
       color: #6b7280;
     }
@@ -357,6 +359,56 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
       box-shadow: 0 0 8px #ef4444;
     }
 
+    .test-row {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .test-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.25rem;
+      color: var(--text-muted);
+    }
+    .comparison-summary {
+      transition: all 0.3s ease;
+    }
+    
+    /* Small card uncompressed button styles */
+    .card.small .btn-api.btn-uncompressed {
+      background: transparent;
+      border: 1px solid var(--small-color);
+      color: var(--small-color);
+    }
+    .card.small .btn-api.btn-uncompressed:hover {
+      background: var(--small-glow);
+      color: white;
+    }
+    
+    /* Medium card uncompressed button styles */
+    .card.medium .btn-api.btn-uncompressed {
+      background: transparent;
+      border: 1px solid var(--medium-color);
+      color: var(--medium-color);
+    }
+    .card.medium .btn-api.btn-uncompressed:hover {
+      background: var(--medium-glow);
+      color: white;
+    }
+    
+    /* Large card uncompressed button styles */
+    .card.large .btn-api.btn-uncompressed {
+      background: transparent;
+      border: 1px solid var(--large-color);
+      color: var(--large-color);
+    }
+    .card.large .btn-api.btn-uncompressed:hover {
+      background: var(--large-glow);
+      color: white;
+    }
+
     footer {
       margin-top: auto;
       padding: 3rem 1rem 1rem 1rem;
@@ -396,23 +448,51 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Browser Download
         </a>
-        <button onclick="downloadViaAPI('small_file.txt', 'small')" class="btn btn-api">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-          Speed Test (No Save)
-        </button>
+        <div style="display: flex; gap: 0.5rem; width: 100%;">
+          <button onclick="downloadViaAPI('small_file.txt', 'small', true)" class="btn btn-api" style="flex: 1;">
+            Speed Test (Compressed)
+          </button>
+          <button onclick="downloadViaAPI('small_file.txt', 'small', false)" class="btn btn-api btn-uncompressed" style="flex: 1;">
+            Speed Test (Raw)
+          </button>
+        </div>
       </div>
 
       <div class="progress-container" id="small-progress-container">
-        <div class="progress-header">
-          <span id="small-status">Idle</span>
-          <span id="small-percent">0%</span>
+        <!-- Uncompressed section -->
+        <div class="test-row" id="small-uncompressed-row">
+          <div class="test-label">Raw (Uncompressed)</div>
+          <div class="progress-header">
+            <span id="small-uncompressed-status">Idle</span>
+            <span id="small-uncompressed-percent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="small-uncompressed-bar"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="small-uncompressed-loaded">0 B</span>
+            <span id="small-uncompressed-speed">0 B/s</span>
+          </div>
         </div>
-        <div class="progress-bar-bg">
-          <div class="progress-bar-fill" id="small-bar"></div>
+
+        <!-- Compressed section -->
+        <div class="test-row" id="small-compressed-row" style="margin-top: 1rem;">
+          <div class="test-label">Compressed</div>
+          <div class="progress-header">
+            <span id="small-compressed-status">Idle</span>
+            <span id="small-compressed-percent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="small-compressed-bar"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="small-compressed-loaded">0 B</span>
+            <span id="small-compressed-speed">0 B/s</span>
+          </div>
         </div>
-        <div class="progress-stats">
-          <span id="small-loaded">0 B</span>
-          <span id="small-speed">0 B/s</span>
+
+        <!-- Comparison Summary -->
+        <div class="comparison-summary" id="small-comparison-summary" style="display: none; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px dashed var(--border); font-size: 0.85rem; color: #34d399; font-weight: 600; text-align: center;">
         </div>
       </div>
     </div>
@@ -422,73 +502,130 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
       <div class="file-icon">
         <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       </div>
-      <div class="file-name">medium_file.bin</div>
+      <div class="file-name">medium_file.txt</div>
       <div class="file-size">
         <span>5.00 MB</span>
-        <span class="size-tag">BIN</span>
+        <span class="size-tag">TXT</span>
       </div>
-      <div class="file-desc">A mid-size binary payload. Ideal for assessing network latency and throughput under regular network conditions and testing buffering speeds on client browsers.</div>
+      <div class="file-desc">A mid-size text payload. Ideal for assessing network latency and throughput under regular network conditions and testing buffering speeds on client browsers.</div>
       
       <div class="button-group">
-        <a href="/medium_file.bin" download class="btn btn-download">
+        <a href="/medium_file.txt" download class="btn btn-download">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Browser Download
         </a>
-        <button onclick="downloadViaAPI('medium_file.bin', 'medium')" class="btn btn-api">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-          Speed Test (No Save)
-        </button>
+        <div style="display: flex; gap: 0.5rem; width: 100%;">
+          <button onclick="downloadViaAPI('medium_file.txt', 'medium', true)" class="btn btn-api" style="flex: 1;">
+            Speed Test (Compressed)
+          </button>
+          <button onclick="downloadViaAPI('medium_file.txt', 'medium', false)" class="btn btn-api btn-uncompressed" style="flex: 1;">
+            Speed Test (Raw)
+          </button>
+        </div>
       </div>
 
       <div class="progress-container" id="medium-progress-container">
-        <div class="progress-header">
-          <span id="medium-status">Idle</span>
-          <span id="medium-percent">0%</span>
+        <!-- Uncompressed section -->
+        <div class="test-row" id="medium-uncompressed-row">
+          <div class="test-label">Raw (Uncompressed)</div>
+          <div class="progress-header">
+            <span id="medium-uncompressed-status">Idle</span>
+            <span id="medium-uncompressed-percent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="medium-uncompressed-bar"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="medium-uncompressed-loaded">0 B</span>
+            <span id="medium-uncompressed-speed">0 B/s</span>
+          </div>
         </div>
-        <div class="progress-bar-bg">
-          <div class="progress-bar-fill" id="medium-bar"></div>
+
+        <!-- Compressed section -->
+        <div class="test-row" id="medium-compressed-row" style="margin-top: 1rem;">
+          <div class="test-label">Compressed</div>
+          <div class="progress-header">
+            <span id="medium-compressed-status">Idle</span>
+            <span id="medium-compressed-percent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="medium-compressed-bar"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="medium-compressed-loaded">0 B</span>
+            <span id="medium-compressed-speed">0 B/s</span>
+          </div>
         </div>
-        <div class="progress-stats">
-          <span id="medium-loaded">0 B</span>
-          <span id="medium-speed">0 B/s</span>
+
+        <!-- Comparison Summary -->
+        <div class="comparison-summary" id="medium-comparison-summary" style="display: none; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px dashed var(--border); font-size: 0.85rem; color: #34d399; font-weight: 600; text-align: center;">
         </div>
       </div>
     </div>
-
+)html"
+                      R"html(
     <!-- Large File Card -->
     <div class="card large" id="large-card">
       <div class="file-icon">
         <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
       </div>
-      <div class="file-name">large_file.bin</div>
+      <div class="file-name">large_file.txt</div>
       <div class="file-size">
         <span>25.00 MB</span>
-        <span class="size-tag">BIN</span>
+        <span class="size-tag">TXT</span>
       </div>
-      <div class="file-desc">A heavy binary container. Highly effective for highlighting memory efficiency, testing streaming chunk structures, measuring bandwidth speed curves, and observing browser range retrieval.</div>
+      <div class="file-desc">A heavy text container. Highly effective for highlighting memory efficiency, testing streaming chunk structures, measuring bandwidth speed curves, and observing browser range retrieval.</div>
       
       <div class="button-group">
-        <a href="/large_file.bin" download class="btn btn-download">
+        <a href="/large_file.txt" download class="btn btn-download">
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Browser Download
         </a>
-        <button onclick="downloadViaAPI('large_file.bin', 'large')" class="btn btn-api">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-          Speed Test (No Save)
-        </button>
+        <div style="display: flex; gap: 0.5rem; width: 100%;">
+          <button onclick="downloadViaAPI('large_file.txt', 'large', true)" class="btn btn-api" style="flex: 1;">
+            Speed Test (Compressed)
+          </button>
+          <button onclick="downloadViaAPI('large_file.txt', 'large', false)" class="btn btn-api btn-uncompressed" style="flex: 1;">
+            Speed Test (Raw)
+          </button>
+        </div>
       </div>
 
       <div class="progress-container" id="large-progress-container">
-        <div class="progress-header">
-          <span id="large-status">Idle</span>
-          <span id="large-percent">0%</span>
+        <!-- Uncompressed section -->
+        <div class="test-row" id="large-uncompressed-row">
+          <div class="test-label">Raw (Uncompressed)</div>
+          <div class="progress-header">
+            <span id="large-uncompressed-status">Idle</span>
+            <span id="large-uncompressed-percent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="large-uncompressed-bar"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="large-uncompressed-loaded">0 B</span>
+            <span id="large-uncompressed-speed">0 B/s</span>
+          </div>
         </div>
-        <div class="progress-bar-bg">
-          <div class="progress-bar-fill" id="large-bar"></div>
+
+        <!-- Compressed section -->
+        <div class="test-row" id="large-compressed-row" style="margin-top: 1rem;">
+          <div class="test-label">Compressed</div>
+          <div class="progress-header">
+            <span id="large-compressed-status">Idle</span>
+            <span id="large-compressed-percent">0%</span>
+          </div>
+          <div class="progress-bar-bg">
+            <div class="progress-bar-fill" id="large-compressed-bar"></div>
+          </div>
+          <div class="progress-stats">
+            <span id="large-compressed-loaded">0 B</span>
+            <span id="large-compressed-speed">0 B/s</span>
+          </div>
         </div>
-        <div class="progress-stats">
-          <span id="large-loaded">0 B</span>
-          <span id="large-speed">0 B/s</span>
+
+        <!-- Comparison Summary -->
+        <div class="comparison-summary" id="large-comparison-summary" style="display: none; margin-top: 1rem; padding-top: 0.75rem; border-top: 1px dashed var(--border); font-size: 0.85rem; color: #34d399; font-weight: 600; text-align: center;">
         </div>
       </div>
     </div>
@@ -595,23 +732,32 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
     checkServerStatus();
     setInterval(checkServerStatus, 3000);
 
-    async function downloadViaAPI(fileName, cardId) {
-      const statusText = document.getElementById(`${cardId}-status`);
+    // Keep track of metrics for comparisons
+    const speedTestMetrics = {
+      small: { compressed: null, uncompressed: null },
+      medium: { compressed: null, uncompressed: null },
+      large: { compressed: null, uncompressed: null }
+    };
+
+    async function downloadViaAPI(fileName, cardId, useCompression) {
+      const prefix = useCompression ? 'compressed' : 'uncompressed';
+      
+      const statusText = document.getElementById(`${cardId}-${prefix}-status`);
+      const container = document.getElementById(`${cardId}-progress-container`);
+      const progressBar = document.getElementById(`${cardId}-${prefix}-bar`);
+      const percentText = document.getElementById(`${cardId}-${prefix}-percent`);
+      const loadedText = document.getElementById(`${cardId}-${prefix}-loaded`);
+      const speedText = document.getElementById(`${cardId}-${prefix}-speed`);
+      const comparisonDiv = document.getElementById(`${cardId}-comparison-summary`);
+      
       if (!serverOnline) {
         logMessage(`Speed test aborted: Server is offline. Please start the server and try again.`, 'error');
-        const container = document.getElementById(`${cardId}-progress-container`);
         container.style.display = 'block';
         statusText.textContent = 'Offline';
         statusText.style.color = '#ef4444';
         return;
       }
 
-      const container = document.getElementById(`${cardId}-progress-container`);
-      const progressBar = document.getElementById(`${cardId}-bar`);
-      const percentText = document.getElementById(`${cardId}-percent`);
-      const loadedText = document.getElementById(`${cardId}-loaded`);
-      const speedText = document.getElementById(`${cardId}-speed`);
-      
       container.style.display = 'block';
       progressBar.style.width = '0%';
       percentText.textContent = '0%';
@@ -620,14 +766,25 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
       statusText.textContent = 'Connecting';
       statusText.style.color = '#fbbf24';
 
-      logMessage(`Initiating API speed test: ${fileName} (Chunks are discarded in-memory, no file is saved)`, 'warning');
+      const compressionLabel = useCompression ? 'Compressed' : 'Uncompressed';
+      logMessage(`Initiating ${compressionLabel} speed test for ${fileName} (No save)`, 'warning');
+      
       const startTime = performance.now();
       let lastTime = startTime;
       let loaded = 0;
       let lastLoaded = 0;
 
       try {
-        const response = await fetch(`/${fileName}`);
+        const headers = {
+          'X-Accept-Encoding': useCompression ? 'gzip, br, zstd' : 'identity',
+          'Accept-Encoding': useCompression ? 'gzip, br, zstd' : 'identity'
+        };
+        
+        // Cache bust using query param to make sure browser gets a fresh request
+)html"
+                      R"html(
+        const fetchUrl = `/${fileName}?t=${Date.now()}`;
+        const response = await fetch(fetchUrl, { headers });
         if (!response.ok) {
           throw new Error(`HTTP Error status: ${response.status} ${response.statusText}`);
         }
@@ -635,12 +792,9 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
         statusText.textContent = 'Downloading';
         statusText.style.color = '#38bdf8';
         
-        const contentLength = parseInt(response.headers.get('Content-Length'), 10);
-        if (isNaN(contentLength)) {
-          logMessage(`Stream size unknown. Download starts...`, 'warning');
-        } else {
-          logMessage(`Streaming file: ${fileName} (${formatBytes(contentLength)})`, 'info');
-        }
+        const contentEncoding = response.headers.get('Content-Encoding') || 'identity';
+        let contentLength = parseInt(response.headers.get('Content-Length'), 10);
+        logMessage(`Streaming file: ${fileName} [Encoding: ${contentEncoding}]`, 'info');
 
         const reader = response.body.getReader();
         while (true) {
@@ -656,14 +810,10 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
             speedText.textContent = formatSpeed(currentSpeed);
             loadedText.textContent = formatBytes(loaded);
 
-            if (!isNaN(contentLength)) {
-              const percent = Math.min(100, (loaded / contentLength) * 100);
-              percentText.textContent = percent.toFixed(1) + '%';
-              progressBar.style.width = percent + '%';
-            } else {
-              percentText.textContent = 'Streaming';
-              progressBar.style.width = '100%';
-            }
+            const displayTotal = isNaN(contentLength) ? loaded : contentLength;
+            const percent = Math.min(100, (loaded / displayTotal) * 100);
+            percentText.textContent = percent.toFixed(1) + '%';
+            progressBar.style.width = percent + '%';
 
             lastTime = now;
             lastLoaded = loaded;
@@ -671,16 +821,113 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
         }
 
         const totalTime = (performance.now() - startTime) / 1000;
-        const avgSpeed = loaded / totalTime;
         
+        // Query the Resource Timing API for detailed network timing and sizes
+        // We find the entry by matching the exact URL fetched (resolved absolute URL)
+        const absoluteUrl = new URL(fetchUrl, window.location.href).toString();
+        const entries = performance.getEntriesByName(absoluteUrl);
+        
+        let wireSize = loaded;
+        let originalSize = loaded;
+        let transferTime = totalTime;
+        let contentEncodingMatched = contentEncoding;
+
+        if (entries.length > 0) {
+          const entry = entries[entries.length - 1];
+          
+          // encodedBodySize represents compressed body payload size
+          // decodedBodySize represents decompressed body payload size
+          if (entry.encodedBodySize > 0) {
+            wireSize = entry.encodedBodySize;
+          }
+          if (entry.decodedBodySize > 0) {
+            originalSize = entry.decodedBodySize;
+          }
+          
+          // Strict transfer time: responseEnd - responseStart
+          // It isolates actual bytes downloading on the wire, excluding connection setup
+          const timingDuration = entry.responseEnd - entry.responseStart;
+          if (timingDuration > 0) {
+            transferTime = timingDuration / 1000;
+          } else {
+            // Fallback if responseEnd and responseStart are too close or identical on localhost
+            const roundtripDuration = entry.responseEnd - entry.requestStart;
+            if (roundtripDuration > 0) {
+              transferTime = roundtripDuration / 1000;
+            }
+          }
+        }
+
+        // Avoid divide-by-zero for sub-millisecond localhost downloads
+        if (transferTime <= 0) {
+          transferTime = 0.001; 
+        }
+
+        const avgPerceivedSpeed = originalSize / transferTime;
+
         progressBar.style.width = '100%';
         percentText.textContent = '100%';
-        loadedText.textContent = formatBytes(loaded);
-        speedText.textContent = `Avg: ${formatSpeed(avgSpeed)}`;
+        
+        loadedText.textContent = `${formatBytes(wireSize)} wire / ${formatBytes(originalSize)} file`;
+        speedText.textContent = `Avg: ${formatSpeed(avgPerceivedSpeed)}`;
         statusText.textContent = 'Completed';
         statusText.style.color = '#10b981';
 
-        logMessage(`Download completed: ${fileName} (${formatBytes(loaded)} in ${totalTime.toFixed(2)}s at ${formatSpeed(avgSpeed)})`, 'success');
+        logMessage(`Download completed: ${fileName} (${formatBytes(wireSize)} wire / ${formatBytes(originalSize)} file in ${transferTime.toFixed(3)}s at ${formatSpeed(avgPerceivedSpeed)})`, 'success');
+
+        // Store metrics
+        speedTestMetrics[cardId][prefix] = {
+          wireSize,
+          originalSize,
+          time: transferTime,
+          perceivedSpeed: avgPerceivedSpeed,
+          encoding: contentEncodingMatched
+        };
+
+        // Render comparison if both are complete
+        const metrics = speedTestMetrics[cardId];
+        if (metrics.compressed && metrics.uncompressed) {
+          const rawSize = metrics.uncompressed.wireSize;
+          const compSize = metrics.compressed.wireSize;
+          
+          let savingsText = "0%";
+          if (rawSize > 0) {
+            const savingsPercent = ((rawSize - compSize) / rawSize) * 100;
+            if (compSize > 0 && savingsPercent > 99.9) {
+              savingsText = ">99.9%";
+            } else {
+              savingsText = savingsPercent.toFixed(1) + "%";
+            }
+          }
+          
+          const compressionFactor = compSize > 0 ? (rawSize / compSize) : 1;
+          let factorText = "1.0x";
+          if (compressionFactor >= 100) {
+            factorText = Math.round(compressionFactor).toLocaleString() + "x";
+          } else if (compressionFactor > 1) {
+            factorText = compressionFactor.toFixed(1) + "x";
+          } else if (compressionFactor < 1) {
+            factorText = compressionFactor.toFixed(2) + "x";
+          }
+
+          const speedup = metrics.compressed.perceivedSpeed / metrics.uncompressed.perceivedSpeed;
+          
+          comparisonDiv.style.display = 'block';
+          comparisonDiv.innerHTML = `
+            <div style="color: #10b981; font-weight: 700; margin-bottom: 0.25rem;">
+              ⚡ Compression: ${metrics.compressed.encoding.toUpperCase()}
+            </div>
+            <div>
+              Bandwidth Saved: <span style="color: #a855f7;">${savingsText}</span> (${formatBytes(compSize)} vs ${formatBytes(rawSize)})
+            </div>
+            <div style="margin-top: 0.15rem;">
+              Compression Factor: <span style="color: #10b981;">${factorText}</span>
+            </div>
+            <div style="margin-top: 0.15rem;">
+              Speedup Factor: <span style="color: #3b82f6;">${speedup.toFixed(1)}x faster</span>
+            </div>
+          `;
+        }
 
       } catch (err) {
         statusText.textContent = 'Failed';
@@ -693,37 +940,18 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
 </html>
 )html";
 
-// Helper to construct a file filled with a specific character/pattern
-void create_dummy_file(const std::string &filepath, size_t size_in_bytes,
-                       char fill_char) {
+// Helper to construct a text file filled with a repeating sentence
+void create_text_file(const std::string &filepath, size_t size_in_bytes,
+                      const std::string &pattern) {
   std::ofstream out(filepath, std::ios::binary);
-  if (!out) {
-    std::cerr << "Failed to create file: " << filepath << std::endl;
-    return;
-  }
-  const size_t chunk_size = 65536;
-  std::vector<char> buffer(chunk_size, fill_char);
-  size_t bytes_written = 0;
-  while (bytes_written < size_in_bytes) {
-    size_t to_write = std::min(chunk_size, size_in_bytes - bytes_written);
-    out.write(buffer.data(), to_write);
-    bytes_written += to_write;
-  }
-}
-
-// Helper to construct small text file with readable contents
-void create_small_text_file(const std::string &filepath) {
-  std::ofstream out(filepath);
   if (!out) {
     std::cerr << "Failed to create text file: " << filepath << std::endl;
     return;
   }
-  std::string pattern =
-      "cpp-http library static file serving demo text. This is a small text "
-      "file designed to show fast download capabilities. ";
   size_t bytes_written = 0;
-  while (bytes_written < 10 * 1024) {
-    out << pattern << "\n";
+  while (bytes_written < size_in_bytes) {
+    out.write(pattern.data(), pattern.size());
+    out.put('\n');
     bytes_written += pattern.size() + 1;
   }
 }
@@ -744,16 +972,39 @@ int main() {
   }
 
   // 2. Generate small text file (10 KB)
-  create_small_text_file(demo_dir + "/small_file.txt");
+  create_text_file(
+      demo_dir + "/small_file.txt", 10 * 1024,
+      "cpp-http library static file serving demo text. This is a small text "
+      "file designed to show fast download capabilities.");
 
-  // 3. Generate medium binary file (5 MB)
-  create_dummy_file(demo_dir + "/medium_file.bin", 5 * 1024 * 1024, 'B');
+  // 3. Generate medium text file (5 MB)
+  create_text_file(
+      demo_dir + "/medium_file.txt", 5 * 1024 * 1024,
+      "cpp-http library static file serving demo text. This is a medium text "
+      "file designed to show network throughput and compression metrics. "
+      "We repeat this sentence multiple times to create a large enough "
+      "payload.");
 
-  // 4. Generate large binary file (25 MB)
-  create_dummy_file(demo_dir + "/large_file.bin", 25 * 1024 * 1024, 'C');
+  // 4. Generate large text file (25 MB)
+  create_text_file(
+      demo_dir + "/large_file.txt", 25 * 1024 * 1024,
+      "cpp-http library static file serving demo text. This is a large text "
+      "file designed to show memory-efficient streaming, chunks, and range "
+      "transfers. "
+      "A large text file is ideal for benchmarking library buffers and thread "
+      "throughput.");
 
-  uint16_t port = 8080;
+  uint16_t port = 8086;
   cpphttp::HttpServer server(port);
+
+  // Add middleware to translate X-Accept-Encoding to Accept-Encoding
+  server.Use([](cpphttp::HttpRequest &req, cpphttp::HttpResponse &) {
+    std::string x_accept = req.GetHeader("X-Accept-Encoding");
+    if (!x_accept.empty()) {
+      req.headers["Accept-Encoding"] = x_accept;
+    }
+    return true;
+  });
 
   // Serve static files from root directory mapping to demo_dir
   server.StaticDir("/", demo_dir, false);
@@ -765,10 +1016,10 @@ int main() {
   std::cout << " - Root UI:          http://localhost:" << port << "/\n";
   std::cout << " - Small File (txt): http://localhost:" << port
             << "/small_file.txt\n";
-  std::cout << " - Medium File (bin):http://localhost:" << port
-            << "/medium_file.bin\n";
-  std::cout << " - Large File (bin): http://localhost:" << port
-            << "/large_file.bin\n";
+  std::cout << " - Medium File (txt):http://localhost:" << port
+            << "/medium_file.txt\n";
+  std::cout << " - Large File (txt): http://localhost:" << port
+            << "/large_file.txt\n";
   std::cout << "========================================================\n";
   std::cout << "Press Enter to stop the server...\n";
 

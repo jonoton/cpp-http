@@ -580,8 +580,9 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
 )html";
 
 int main() {
-  // Construct HttpServer on port 8080
-  cpphttp::HttpServer server(8080);
+  uint16_t port = 8087;
+  // Construct HttpServer on port 8087
+  cpphttp::HttpServer server(port);
 
   // Configure SSL certificates from certs/ directory
   cpptcpnet::TcpListener::SslConfig ssl_config;
@@ -627,8 +628,9 @@ int main() {
   // Start the server
   try {
     server.Start();
-    std::cout << "HTTPS server started on port 8080." << std::endl;
-    std::cout << "Visit https://localhost:8080/ in your browser." << std::endl;
+    std::cout << "HTTPS server started on port " << port << "." << std::endl;
+    std::cout << "Visit https://localhost:" << port << "/ in your browser."
+              << std::endl;
     std::cout << "Press Enter to stop." << std::endl;
     std::cin.get();
     server.Stop();

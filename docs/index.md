@@ -19,6 +19,7 @@ layout: default
 - **CORS Middleware:** Built-in configurable Cross-Origin Resource Sharing (CORS) middleware to manage preflight requests and response headers.
 - **Rate Limiting Middleware:** Built-in IP-based rate limiting with sliding time windows and automatic `Retry-After` headers.
 - **Response Caching Wrapper:** Lightweight route handler caching for `GET` requests with configurable cache duration.
+- **Transparent HTTP Compression:** Support for Zstandard (`zstd`), Brotli (`br`), and Gzip (`gzip`) compression/decompression with priority encoding negotiation (`zstd > br > gzip`) and configurable compression levels on the fly.
 - **HTTP Client Redirect Handling:** Client supports automatic redirect following with standard POST-to-GET method downgrade.
 - **WebSocket Client & Server:** Fully integrated server-side WebSocket routing and client-side `WebSocketClient` with fragmentation, continuation, and ping/pong keep-alives.
 - **Ergonomic Response Builders:** Quickly construct structured responses (`Json`, `Html`, `Plain`, `Redirect`) with status code resolution.

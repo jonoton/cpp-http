@@ -394,7 +394,7 @@ int main() {
 - **Path Traversal Protection:** The routing engine automatically sanitizes `.` and `..` path segments, ensuring clients cannot read files outside of the registered directory.
 - **Directory Index Serving:** Requests attempting to load a directory will automatically serve the `index.html` within that directory if it exists.
 - **Single Page Application (SPA) Fallback:** By enabling the `spa_mode` flag, requests to virtual routes that don't match any static file will automatically serve the root `index.html`. This ensures that your client-side JavaScript router takes control for unhandled backend paths.
-- **Compression & HEAD Support:** Static files automatically benefit from standard features like transparent Gzip compression and automatic `HEAD` method fallback.
+- **Compression & HEAD Support:** Static files automatically benefit from standard features like transparent Zstandard, Brotli, and Gzip compression and automatic `HEAD` method fallback.
 - **HTTP Range Requests (Progressive Loading):** Supports standard `Range` headers (e.g. `bytes=START-END` or `bytes=START-`). It responds with `206 Partial Content` and serves only the requested sub-range, along with `Content-Range`, `Content-Length`, and `Accept-Ranges: bytes` headers. This allows media players to progressively stream and seek through video or audio files directly from the static directory. If the requested range is out-of-bounds, the server returns `416 Range Not Satisfiable`.
 
 
@@ -434,12 +434,50 @@ int main() {
 }
 ```
 
-## Transparent HTTP Compression (Gzip)
+## Transparent HTTP Compression (Zstandard, Brotli, Gzip)
 
-To optimize network bandwidth, `cpp-http` supports automatic Gzip compression and decompression out-of-the-box (powered by `zlib`):
+To optimize network bandwidth, `cpp-http` supports automatic transparent compression and decompression out-of-the-box:
 
-- **Server-Side:** If the client sends an `Accept-Encoding: gzip` header, the `HttpServer` automatically compresses responses transparently before sending them back.
-- **Client-Side:** The `HttpClient` sends `Accept-Encoding: gzip` by default. If the server replies with `Content-Encoding: gzip`, `HttpClient` automatically decompresses the body before returning the `HttpResponse` object.
+- **Supported Encodings:** Zstandard (`zstd`), Brotli (`br`), and Gzip (`gzip`).
+- **Negotiation Priority:** The server negotiates the encoding using the client's `Accept-Encoding` header (respecting quality weights `q=`). If multiple algorithms are supported, the server prioritizes them in the following order: `zstd` > `br` > `gzip` > `identity` (no compression).
+- **Client-Side:** The `HttpClient` advertises `Accept-Encoding: zstd, br, gzip` by default. If the server responds with a compressed encoding, the client transparently decompresses the body.
+- **Server-Side:** If the client indicates support for any of the compression schemes, the `HttpServer` compresses responses transparently before sending.
+- **Static File Serving:** Static files mapped using `StaticDir` (or handler responses setting `is_file = true` on `200 OK`) automatically benefit from dynamic on-the-fly compression if they match the MIME-type and minimum payload size requirements.
+
+### Configuring Compression Settings and Filters
+
+Developers can configure quality levels, size limits, and control which payloads are compressed:
+
+#### 1. Quality & Level Settings
+
+Adjusting compression settings dynamically on the `HttpServer` instance. Setting out-of-bounds levels throws a `std::invalid_argument` exception:
+
+| Algorithm | Method | Default | Valid Range | Details |
+| :--- | :--- | :--- | :--- | :--- |
+| **Zstandard** | `SetZstdCompressionLevel(int level)` | `3` | `[ZSTD_minCLevel(), ZSTD_maxCLevel()]` (typically `[-5, 22]`) | High-speed compression with excellent ratios |
+| **Brotli** | `SetBrotliQuality(int quality)` | `4` | `[0, 11]` | Highly optimized web compression (quality 4-6 is ideal for dynamic content) |
+| **Gzip** | `SetGzipCompressionLevel(int level)` | `-1` (`Z_DEFAULT_COMPRESSION`) | `[-1, 9]` | Standard compression compatibility |
+
+#### 2. Size Threshold & MIME Filters
+
+To optimize CPU performance and prevent redundant processing:
+- **Min Size Limit:** Only payloads (and files) whose size is greater than or equal to a minimum threshold are compressed. The default limit is `1024` bytes. You can change this using `SetMinCompressionSize(size_t bytes)`.
+- **MIME Filtering (Exclusion List):** Compression is active by default for all assets (HTML, CSS, JS, JSON, XML, SVG, YAML, WASM, Fonts, etc.). However, known pre-compressed media or container types (such as JPEGs, PNGs, MP4s, ZIP/tar archives, PDFs, or generic `application/octet-stream` binary streams) are automatically bypassed.
+
+Example of adjusting compression settings:
+```cpp
+cpphttp::HttpServer server(8080);
+
+// Adjust quality levels
+server.SetZstdCompressionLevel(5);
+server.SetBrotliQuality(5);
+server.SetGzipCompressionLevel(1); // 1 = Z_BEST_SPEED
+
+// Adjust minimum size threshold to 512 bytes
+server.SetMinCompressionSize(512);
+
+server.Start();
+```
 
 ## HTTP Redirect Method Downgrade
 

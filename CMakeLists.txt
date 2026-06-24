@@ -4,6 +4,13 @@ project(cpphttp LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+    add_compile_options(/bigobj)
+endif()
+
+# Force dependencies in this directory scope and below to build as static libraries
+set(BUILD_SHARED_LIBS OFF)
+
 include(FetchContent)
 if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
@@ -45,6 +52,38 @@ if(NOT ZLIB_FOUND)
     endif()
 endif()
 
+# Brotli
+find_package(Brotli QUIET)
+if(NOT Brotli_FOUND)
+    message(STATUS "Brotli not found, downloading via FetchContent...")
+    include(FetchContent)
+    FetchContent_Declare(
+      brotli
+      URL https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz
+    )
+    set(BROTLI_BUILD_TOOLS OFF CACHE BOOL "Build Brotli command line utility" FORCE)
+    set(BROTLI_DISABLE_TESTS ON CACHE BOOL "Disable Brotli tests" FORCE)
+    FetchContent_MakeAvailable(brotli)
+endif()
+
+# Zstandard (zstd)
+find_package(zstd QUIET)
+if(NOT zstd_FOUND)
+    message(STATUS "zstd not found, downloading via FetchContent...")
+    include(FetchContent)
+    FetchContent_Declare(
+      zstd
+      URL https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+      SOURCE_SUBDIR "build/cmake"
+    )
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "Build programs" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "Build tests" FORCE)
+    set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "Build contrib" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "Build shared library" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "Build static library" FORCE)
+    FetchContent_MakeAvailable(zstd)
+endif()
+
 # Define as an interface library (header-only)
 add_library(cpphttp INTERFACE)
 add_library(cpphttp::cpphttp ALIAS cpphttp)
@@ -53,6 +92,20 @@ target_include_directories(cpphttp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(cpphttp INTERFACE cxx_std_17)
 
 target_link_libraries(cpphttp INTERFACE cpptcpnet::cpptcpnet ZLIB::ZLIB)
+
+if(TARGET brotlienc)
+    target_link_libraries(cpphttp INTERFACE brotlienc brotlidec brotlicommon)
+    target_include_directories(cpphttp INTERFACE $<BUILD_INTERFACE:${brotli_SOURCE_DIR}/c/include>)
+else()
+    target_link_libraries(cpphttp INTERFACE Brotli::brotlienc Brotli::brotlidec Brotli::brotlicommon)
+endif()
+
+if(TARGET libzstd_static)
+    target_link_libraries(cpphttp INTERFACE libzstd_static)
+    target_include_directories(cpphttp INTERFACE $<BUILD_INTERFACE:${zstd_SOURCE_DIR}/lib>)
+else()
+    target_link_libraries(cpphttp INTERFACE zstd::libzstd_static)
+endif()
 
 # Determine if this is the top-level project
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
