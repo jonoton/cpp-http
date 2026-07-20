@@ -29,7 +29,19 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE cpphttp::cpphttp)
 ```
 
-By linking `cpphttp::cpphttp`, CMake will automatically set up the header include paths and pull in the `cpp-tcpnet` dependency as well.
+By linking `cpphttp::cpphttp`, CMake will automatically set up the header include paths and pull in the dependencies (`cpp-tcpnet`, and by default, `cpp-quic`).
+
+#### QUIC Support Configuration
+
+By default, QUIC (HTTP/3-like) features are enabled (`CPPHTTP_ENABLE_QUIC=ON`). CMake will automatically fetch the dependency `cpp-quic`. 
+
+If you do not want to use QUIC and want to avoid downloading its dependencies, you can explicitly disable it before loading the package:
+
+```cmake
+set(CPPHTTP_ENABLE_QUIC OFF CACHE BOOL "Disable QUIC support" FORCE)
+```
+
+When QUIC is disabled, the library runs in pure TCP/HTTPS mode without requiring any UDP/QUIC dependency libraries.
 
 ### 2. Manual Compilation (Without CMake)
 

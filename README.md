@@ -22,6 +22,7 @@
 - **Reliability & DoS Protection:** Exception-safe parsing, configurable max header block limits, and strict payload/body size limitations.
 - **WebSocket Support:** Fully integrated server-side WebSocket routing and client-side `WebSocketClient` with fragmentation, continuation, and ping/pong keep-alives.
 - **SSL/TLS Support:** Out-of-the-box HTTPS, WSS, and client-side SSL support through OpenSSL.
+- **HTTP-over-QUIC & Hybrid Server/Client:** Seamless support for HTTP over QUIC via the `cpp-quic` library. Includes UDP/QUIC-based servers (`QuicHttpServer`), client-side QUIC transport (`HttpClientImpl<QuicClientTransport>`), and hybrid server configurations (`HybridHttpServer`) that bind to both TCP (HTTPS) and UDP (QUIC) on the same port, automatically advertising QUIC services using `Alt-Svc` headers.
 
 ---
 
@@ -170,11 +171,17 @@ add_executable(my_app main.cpp)
 target_link_libraries(my_app PRIVATE cpphttp::cpphttp)
 ```
 
+By default, HTTP-over-QUIC is enabled and fetches `cpp-quic` as a dependency. If you wish to compile without QUIC support, configure the build with `CPPHTTP_ENABLE_QUIC` set to `OFF`:
+```cmake
+# Disable QUIC support
+set(CPPHTTP_ENABLE_QUIC OFF CACHE BOOL "" FORCE)
+```
+
 ---
 
 ## Directory Overview
 
 - [cpphttp.hpp](file:///workspaces/cpp-http/cpphttp.hpp): The complete single-header HTTP server and client library.
 - [tests/](file:///workspaces/cpp-http/tests): Testing suite using Google Test.
-- [examples/](file:///workspaces/cpp-http/examples): Ready-to-run HTTP/HTTPS/WebSocket server demonstration.
+- [examples/](file:///workspaces/cpp-http/examples): Ready-to-run HTTP/HTTPS/WebSocket and HTTP-over-QUIC server/client demonstrations.
 - [docs/](file:///workspaces/cpp-http/docs): Fully comprehensive markdown documentation.

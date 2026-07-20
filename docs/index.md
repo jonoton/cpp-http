@@ -26,6 +26,7 @@ layout: default
 - **Connection Lifecycle Management:** Explicitly handles `Connection: close` headers for clean socket cleanups.
 - **Defragmentation & DoS Limits:** Configurable max request header boundaries to prevent memory exhaust exploits.
 - **Thread-Pooled Routing:** Workloads are parsed and dispatched concurrently via `cpp-tcpnet` session-affinity worker threads.
+- **HTTP-over-QUIC & Hybrid Transport:** Leverage UDP/QUIC server (`QuicHttpServer`) and client transports, or bind standard TCP (HTTPS) and UDP (QUIC) to a single port using `HybridHttpServer` with automatic client advertisement via `Alt-Svc` headers.
 
 ## Documentation Pages
 

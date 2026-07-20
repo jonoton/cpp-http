@@ -46,6 +46,7 @@ graph TD
 
 `cpp-http` acts as a protocol layer on top of a highly optimized stack:
 - **[cpp-tcpnet](https://github.com/jonoton/cpp-tcpnet):** The foundational socket management, polling loops, and TLS engine.
+- **[cpp-quic](https://github.com/jonoton/cpp-quic):** The transport-layer engine providing QUIC client/server protocols (required when QUIC support is enabled).
 - **[cpp-pubsub](https://github.com/jonoton/cpp-pubsub):** The event broker that coordinates state cleanups.
 - **[cpp-asyncworker](https://github.com/jonoton/cpp-asyncworker):** The worker thread pool scheduling network tasks.
 

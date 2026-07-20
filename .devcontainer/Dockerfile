@@ -10,7 +10,14 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     ruby-full \
     zlib1g-dev \
     clangd \
+    tcpdump \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 # Install Jekyll and Bundler
 RUN gem install jekyll bundler
+
+# Install curl with HTTP/3 support
+RUN curl -LO https://github.com/stunnel/static-curl/releases/download/8.21.0/curl-linux-x86_64-glibc-8.21.0.tar.xz \
+    && tar -xJvf curl-linux-x86_64-glibc-8.21.0.tar.xz \
+    && mv curl /usr/local/bin/curl-http3 \
+    && rm -f SHA256SUMS curl-linux-x86_64-glibc-8.21.0.tar.xz

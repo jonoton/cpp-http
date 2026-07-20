@@ -15,7 +15,6 @@
 #include <fstream>
 #include <functional>
 #include <future>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -30,11 +29,24 @@
 
 #include "cppasyncworker.hpp"
 #include "cpptcpnet.hpp"
+#ifdef CPPHTTP_ENABLE_QUIC
+#ifdef _WIN32
+// Undefine conflicting WinCrypt macros that clash with OpenSSL names
+#undef X509_NAME
+#undef X509_EXTENSIONS
+#undef X509_CERT_TO_BE_SIGNED
+#undef PKCS7_ISSUER_AND_SERIAL
+#undef PKCS7_SIGNER_INFO
+#undef OCSP_REQUEST
+#undef OCSP_RESPONSE
+#endif
+#include "cppquic.hpp"
+#endif
 
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 6;
+constexpr int VERSION_MINOR = 7;
 constexpr int VERSION_PATCH = 0;
 
 /**
@@ -48,6 +60,1732 @@ inline const std::string &version() {
   }();
   return version_str;
 }
+
+namespace qpack {
+
+struct StaticEntry {
+  std::string name;
+  std::string value;
+};
+
+inline const std::vector<StaticEntry> &GetStaticTable() {
+  static const std::vector<StaticEntry> static_table = {
+      {":authority", ""},                                     // 0
+      {":path", "/"},                                         // 1
+      {"age", "0"},                                           // 2
+      {"content-disposition", ""},                            // 3
+      {"content-length", "0"},                                // 4
+      {"cookie", ""},                                         // 5
+      {"date", ""},                                           // 6
+      {"etag", ""},                                           // 7
+      {"if-modified-since", ""},                              // 8
+      {"if-none-match", ""},                                  // 9
+      {"last-modified", ""},                                  // 10
+      {"link", ""},                                           // 11
+      {"location", ""},                                       // 12
+      {"referer", ""},                                        // 13
+      {"set-cookie", ""},                                     // 14
+      {":method", "CONNECT"},                                 // 15
+      {":method", "DELETE"},                                  // 16
+      {":method", "GET"},                                     // 17
+      {":method", "HEAD"},                                    // 18
+      {":method", "OPTIONS"},                                 // 19
+      {":method", "POST"},                                    // 20
+      {":method", "PUT"},                                     // 21
+      {":scheme", "http"},                                    // 22
+      {":scheme", "https"},                                   // 23
+      {":status", "103"},                                     // 24
+      {":status", "200"},                                     // 25
+      {":status", "304"},                                     // 26
+      {":status", "404"},                                     // 27
+      {":status", "503"},                                     // 28
+      {"accept", "*/*"},                                      // 29
+      {"accept", "application/dns-message"},                  // 30
+      {"accept-encoding", "gzip, deflate, br"},               // 31
+      {"accept-ranges", "bytes"},                             // 32
+      {"access-control-allow-headers", "cache-control"},      // 33
+      {"access-control-allow-headers", "content-type"},       // 34
+      {"access-control-allow-origin", "*"},                   // 35
+      {"cache-control", "max-age=0"},                         // 36
+      {"cache-control", "max-age=2592000"},                   // 37
+      {"cache-control", "max-age=604800"},                    // 38
+      {"cache-control", "no-cache"},                          // 39
+      {"cache-control", "no-store"},                          // 40
+      {"cache-control", "public, max-age=31536000"},          // 41
+      {"content-encoding", "br"},                             // 42
+      {"content-encoding", "gzip"},                           // 43
+      {"content-type", "application/dns-message"},            // 44
+      {"content-type", "application/javascript"},             // 45
+      {"content-type", "application/json"},                   // 46
+      {"content-type", "application/x-www-form-urlencoded"},  // 47
+      {"content-type", "image/gif"},                          // 48
+      {"content-type", "image/jpeg"},                         // 49
+      {"content-type", "image/png"},                          // 50
+      {"content-type", "text/css"},                           // 51
+      {"content-type", "text/html; charset=utf-8"},           // 52
+      {"content-type", "text/plain"},                         // 53
+      {"content-type", "text/plain;charset=utf-8"},           // 54
+      {"range", "bytes=0-"},                                  // 55
+      {"strict-transport-security", "max-age=31536000"},      // 56
+      {"strict-transport-security",
+       "max-age=31536000; includesubdomains"},  // 57
+      {"strict-transport-security",
+       "max-age=31536000; includesubdomains; preload"},        // 58
+      {"vary", "accept-encoding"},                             // 59
+      {"vary", "origin"},                                      // 60
+      {"x-content-type-options", "nosniff"},                   // 61
+      {"x-xss-protection", "1; mode=block"},                   // 62
+      {":status", "100"},                                      // 63
+      {":status", "204"},                                      // 64
+      {":status", "206"},                                      // 65
+      {":status", "302"},                                      // 66
+      {":status", "400"},                                      // 67
+      {":status", "403"},                                      // 68
+      {":status", "421"},                                      // 69
+      {":status", "425"},                                      // 70
+      {":status", "500"},                                      // 71
+      {"accept-language", ""},                                 // 72
+      {"access-control-allow-credentials", "FALSE"},           // 73
+      {"access-control-allow-credentials", "TRUE"},            // 74
+      {"access-control-allow-headers", "*"},                   // 75
+      {"access-control-allow-methods", "get"},                 // 76
+      {"access-control-allow-methods", "get, post, options"},  // 77
+      {"access-control-allow-methods", "options"},             // 78
+      {"access-control-expose-headers", "content-length"},     // 79
+      {"access-control-request-headers", "content-type"},      // 80
+      {"access-control-request-method", "get"},                // 81
+      {"access-control-request-method", "post"},               // 82
+      {"alt-svc", "clear"},                                    // 83
+      {"authorization", ""},                                   // 84
+      {"content-security-policy",
+       "script-src 'none'; object-src 'none'; base-uri 'none'"},  // 85
+      {"early-data", "1"},                                        // 86
+      {"expect-ct", ""},                                          // 87
+      {"forwarded", ""},                                          // 88
+      {"if-range", ""},                                           // 89
+      {"origin", ""},                                             // 90
+      {"purpose", "prefetch"},                                    // 91
+      {"server", ""},                                             // 92
+      {"timing-allow-origin", "*"},                               // 93
+      {"upgrade-insecure-requests", "1"},                         // 94
+      {"user-agent", ""},                                         // 95
+      {"x-forwarded-for", ""},                                    // 96
+      {"x-frame-options", "deny"},                                // 97
+      {"x-frame-options", "sameorigin"}                           // 98
+  };
+  return static_table;
+}
+
+struct HuffmanNode {
+  int symbol = -1;
+  int child[2] = {-1, -1};
+};
+
+inline const std::vector<HuffmanNode> &GetHuffmanTree() {
+  static std::vector<HuffmanNode> tree;
+  static std::once_flag once;
+  std::call_once(once, []() {
+    static const uint8_t code_lengths[257] = {
+        13, 23, 28, 28, 28, 28, 28, 28, 28, 24, 30, 28, 28, 30, 28, 28, 28, 28,
+        28, 28, 28, 28, 30, 28, 28, 28, 28, 28, 28, 28, 28, 28, 6,  10, 10, 12,
+        13, 6,  8,  11, 10, 10, 8,  11, 8,  6,  6,  6,  5,  5,  5,  6,  6,  6,
+        6,  6,  6,  6,  7,  8,  15, 6,  12, 10, 13, 6,  7,  7,  7,  7,  7,  7,
+        7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  7,  8,  7,
+        8,  13, 19, 13, 14, 6,  15, 5,  6,  5,  6,  5,  6,  6,  6,  5,  7,  7,
+        6,  6,  6,  5,  6,  7,  6,  5,  5,  6,  7,  7,  7,  7,  7,  15, 11, 14,
+        13, 28, 20, 22, 20, 20, 22, 22, 22, 23, 22, 23, 23, 23, 23, 23, 24, 23,
+        24, 24, 22, 23, 24, 23, 23, 23, 23, 21, 22, 23, 22, 23, 23, 24, 22, 21,
+        20, 22, 22, 23, 23, 21, 23, 22, 22, 24, 21, 22, 23, 23, 21, 21, 22, 21,
+        23, 22, 23, 23, 20, 22, 22, 22, 23, 22, 22, 23, 26, 26, 20, 19, 22, 23,
+        22, 25, 26, 26, 26, 27, 27, 26, 24, 25, 19, 21, 26, 27, 27, 26, 27, 24,
+        21, 21, 26, 26, 28, 27, 27, 27, 20, 24, 20, 21, 22, 21, 21, 23, 22, 22,
+        25, 25, 24, 24, 26, 23, 26, 27, 26, 26, 27, 27, 27, 27, 27, 28, 27, 27,
+        27, 27, 27, 26, 30};
+    static const uint32_t right_codes[257] = {
+        0b00000000000000000001111111111000,  // 0x00
+        0b00000000011111111111111111011000,  // 0x01
+        0b00001111111111111111111111100010,  // 0x02
+        0b00001111111111111111111111100011,  // 0x03
+        0b00001111111111111111111111100100,  // 0x04
+        0b00001111111111111111111111100101,  // 0x05
+        0b00001111111111111111111111100110,  // 0x06
+        0b00001111111111111111111111100111,  // 0x07
+        0b00001111111111111111111111101000,  // 0x08
+        0b00000000111111111111111111101010,  // 0x09
+        0b00111111111111111111111111111100,  // 0x0a
+        0b00001111111111111111111111101001,  // 0x0b
+        0b00001111111111111111111111101010,  // 0x0c
+        0b00111111111111111111111111111101,  // 0x0d
+        0b00001111111111111111111111101011,  // 0x0e
+        0b00001111111111111111111111101100,  // 0x0f
+        0b00001111111111111111111111101101,  // 0x10
+        0b00001111111111111111111111101110,  // 0x11
+        0b00001111111111111111111111101111,  // 0x12
+        0b00001111111111111111111111110000,  // 0x13
+        0b00001111111111111111111111110001,  // 0x14
+        0b00001111111111111111111111110010,  // 0x15
+        0b00111111111111111111111111111110,  // 0x16
+        0b00001111111111111111111111110011,  // 0x17
+        0b00001111111111111111111111110100,  // 0x18
+        0b00001111111111111111111111110101,  // 0x19
+        0b00001111111111111111111111110110,  // 0x1a
+        0b00001111111111111111111111110111,  // 0x1b
+        0b00001111111111111111111111111000,  // 0x1c
+        0b00001111111111111111111111111001,  // 0x1d
+        0b00001111111111111111111111111010,  // 0x1e
+        0b00001111111111111111111111111011,  // 0x1f
+        0b00000000000000000000000000010100,  // 0x20
+        0b00000000000000000000001111111000,  // '!'
+        0b00000000000000000000001111111001,  // '\"'
+        0b00000000000000000000111111111010,  // '#'
+        0b00000000000000000001111111111001,  // '$'
+        0b00000000000000000000000000010101,  // '%'
+        0b00000000000000000000000011111000,  // '&'
+        0b00000000000000000000011111111010,  // '\''
+        0b00000000000000000000001111111010,  // '('
+        0b00000000000000000000001111111011,  // ')'
+        0b00000000000000000000000011111001,  // '*'
+        0b00000000000000000000011111111011,  // '+'
+        0b00000000000000000000000011111010,  // ','
+        0b00000000000000000000000000010110,  // '-'
+        0b00000000000000000000000000010111,  // '.'
+        0b00000000000000000000000000011000,  // '/'
+        0b00000000000000000000000000000000,  // '0'
+        0b00000000000000000000000000000001,  // '1'
+        0b00000000000000000000000000000010,  // '2'
+        0b00000000000000000000000000011001,  // '3'
+        0b00000000000000000000000000011010,  // '4'
+        0b00000000000000000000000000011011,  // '5'
+        0b00000000000000000000000000011100,  // '6'
+        0b00000000000000000000000000011101,  // '7'
+        0b00000000000000000000000000011110,  // '8'
+        0b00000000000000000000000000011111,  // '9'
+        0b00000000000000000000000001011100,  // ':'
+        0b00000000000000000000000011111011,  // ';'
+        0b00000000000000000111111111111100,  // '<'
+        0b00000000000000000000000000100000,  // '='
+        0b00000000000000000000111111111011,  // '>'
+        0b00000000000000000000001111111100,  // '?'
+        0b00000000000000000001111111111010,  // '@'
+        0b00000000000000000000000000100001,  // 'A'
+        0b00000000000000000000000001011101,  // 'B'
+        0b00000000000000000000000001011110,  // 'C'
+        0b00000000000000000000000001011111,  // 'D'
+        0b00000000000000000000000001100000,  // 'E'
+        0b00000000000000000000000001100001,  // 'F'
+        0b00000000000000000000000001100010,  // 'G'
+        0b00000000000000000000000001100011,  // 'H'
+        0b00000000000000000000000001100100,  // 'I'
+        0b00000000000000000000000001100101,  // 'J'
+        0b00000000000000000000000001100110,  // 'K'
+        0b00000000000000000000000001100111,  // 'L'
+        0b00000000000000000000000001101000,  // 'M'
+        0b00000000000000000000000001101001,  // 'N'
+        0b00000000000000000000000001101010,  // 'O'
+        0b00000000000000000000000001101011,  // 'P'
+        0b00000000000000000000000001101100,  // 'Q'
+        0b00000000000000000000000001101101,  // 'R'
+        0b00000000000000000000000001101110,  // 'S'
+        0b00000000000000000000000001101111,  // 'T'
+        0b00000000000000000000000001110000,  // 'U'
+        0b00000000000000000000000001110001,  // 'V'
+        0b00000000000000000000000001110010,  // 'W'
+        0b00000000000000000000000011111100,  // 'X'
+        0b00000000000000000000000001110011,  // 'Y'
+        0b00000000000000000000000011111101,  // 'Z'
+        0b00000000000000000001111111111011,  // '['
+        0b00000000000001111111111111110000,  // '\\'
+        0b00000000000000000001111111111100,  // ']'
+        0b00000000000000000011111111111100,  // '^'
+        0b00000000000000000000000000100010,  // '_'
+        0b00000000000000000111111111111101,  // '`'
+        0b00000000000000000000000000000011,  // 'a'
+        0b00000000000000000000000000100011,  // 'b'
+        0b00000000000000000000000000000100,  // 'c'
+        0b00000000000000000000000000100100,  // 'd'
+        0b00000000000000000000000000000101,  // 'e'
+        0b00000000000000000000000000100101,  // 'f'
+        0b00000000000000000000000000100110,  // 'g'
+        0b00000000000000000000000000100111,  // 'h'
+        0b00000000000000000000000000000110,  // 'i'
+        0b00000000000000000000000001110100,  // 'j'
+        0b00000000000000000000000001110101,  // 'k'
+        0b00000000000000000000000000101000,  // 'l'
+        0b00000000000000000000000000101001,  // 'm'
+        0b00000000000000000000000000101010,  // 'n'
+        0b00000000000000000000000000000111,  // 'o'
+        0b00000000000000000000000000101011,  // 'p'
+        0b00000000000000000000000001110110,  // 'q'
+        0b00000000000000000000000000101100,  // 'r'
+        0b00000000000000000000000000001000,  // 's'
+        0b00000000000000000000000000001001,  // 't'
+        0b00000000000000000000000000101101,  // 'u'
+        0b00000000000000000000000001110111,  // 'v'
+        0b00000000000000000000000001111000,  // 'w'
+        0b00000000000000000000000001111001,  // 'x'
+        0b00000000000000000000000001111010,  // 'y'
+        0b00000000000000000000000001111011,  // 'z'
+        0b00000000000000000111111111111110,  // '{'
+        0b00000000000000000000011111111100,  // '|'
+        0b00000000000000000011111111111101,  // '}'
+        0b00000000000000000001111111111101,  // '~'
+        0b00001111111111111111111111111100,  // 0x7f
+        0b00000000000011111111111111100110,  // 0x80
+        0b00000000001111111111111111010010,  // 0x81
+        0b00000000000011111111111111100111,  // 0x82
+        0b00000000000011111111111111101000,  // 0x83
+        0b00000000001111111111111111010011,  // 0x84
+        0b00000000001111111111111111010100,  // 0x85
+        0b00000000001111111111111111010101,  // 0x86
+        0b00000000011111111111111111011001,  // 0x87
+        0b00000000001111111111111111010110,  // 0x88
+        0b00000000011111111111111111011010,  // 0x89
+        0b00000000011111111111111111011011,  // 0x8a
+        0b00000000011111111111111111011100,  // 0x8b
+        0b00000000011111111111111111011101,  // 0x8c
+        0b00000000011111111111111111011110,  // 0x8d
+        0b00000000111111111111111111101011,  // 0x8e
+        0b00000000011111111111111111011111,  // 0x8f
+        0b00000000111111111111111111101100,  // 0x90
+        0b00000000111111111111111111101101,  // 0x91
+        0b00000000001111111111111111010111,  // 0x92
+        0b00000000011111111111111111100000,  // 0x93
+        0b00000000111111111111111111101110,  // 0x94
+        0b00000000011111111111111111100001,  // 0x95
+        0b00000000011111111111111111100010,  // 0x96
+        0b00000000011111111111111111100011,  // 0x97
+        0b00000000011111111111111111100100,  // 0x98
+        0b00000000000111111111111111011100,  // 0x99
+        0b00000000001111111111111111011000,  // 0x9a
+        0b00000000011111111111111111100101,  // 0x9b
+        0b00000000001111111111111111011001,  // 0x9c
+        0b00000000011111111111111111100110,  // 0x9d
+        0b00000000011111111111111111100111,  // 0x9e
+        0b00000000111111111111111111101111,  // 0x9f
+        0b00000000001111111111111111011010,  // 0xa0
+        0b00000000000111111111111111011101,  // 0xa1
+        0b00000000000011111111111111101001,  // 0xa2
+        0b00000000001111111111111111011011,  // 0xa3
+        0b00000000001111111111111111011100,  // 0xa4
+        0b00000000011111111111111111101000,  // 0xa5
+        0b00000000011111111111111111101001,  // 0xa6
+        0b00000000000111111111111111011110,  // 0xa7
+        0b00000000011111111111111111101010,  // 0xa8
+        0b00000000001111111111111111011101,  // 0xa9
+        0b00000000001111111111111111011110,  // 0xaa
+        0b00000000111111111111111111110000,  // 0xab
+        0b00000000000111111111111111011111,  // 0xac
+        0b00000000001111111111111111011111,  // 0xad
+        0b00000000011111111111111111101011,  // 0xae
+        0b00000000011111111111111111101100,  // 0xaf
+        0b00000000000111111111111111100000,  // 0xb0
+        0b00000000000111111111111111100001,  // 0xb1
+        0b00000000001111111111111111100000,  // 0xb2
+        0b00000000000111111111111111100010,  // 0xb3
+        0b00000000011111111111111111101101,  // 0xb4
+        0b00000000001111111111111111100001,  // 0xb5
+        0b00000000011111111111111111101110,  // 0xb6
+        0b00000000011111111111111111101111,  // 0xb7
+        0b00000000000011111111111111101010,  // 0xb8
+        0b00000000001111111111111111100010,  // 0xb9
+        0b00000000001111111111111111100011,  // 0xba
+        0b00000000001111111111111111100100,  // 0xbb
+        0b00000000011111111111111111110000,  // 0xbc
+        0b00000000001111111111111111100101,  // 0xbd
+        0b00000000001111111111111111100110,  // 0xbe
+        0b00000000011111111111111111110001,  // 0xbf
+        0b00000011111111111111111111100000,  // 0xc0
+        0b00000011111111111111111111100001,  // 0xc1
+        0b00000000000011111111111111101011,  // 0xc2
+        0b00000000000001111111111111110001,  // 0xc3
+        0b00000000001111111111111111100111,  // 0xc4
+        0b00000000011111111111111111110010,  // 0xc5
+        0b00000000001111111111111111101000,  // 0xc6
+        0b00000001111111111111111111101100,  // 0xc7
+        0b00000011111111111111111111100010,  // 0xc8
+        0b00000011111111111111111111100011,  // 0xc9
+        0b00000011111111111111111111100100,  // 0xca
+        0b00000111111111111111111111011110,  // 0xcb
+        0b00000111111111111111111111011111,  // 0xcc
+        0b00000011111111111111111111100101,  // 0xcd
+        0b00000000111111111111111111110001,  // 0xce
+        0b00000001111111111111111111101101,  // 0xcf
+        0b00000000000001111111111111110010,  // 0xd0
+        0b00000000000111111111111111100011,  // 0xd1
+        0b00000011111111111111111111100110,  // 0xd2
+        0b00000111111111111111111111100000,  // 0xd3
+        0b00000111111111111111111111100001,  // 0xd4
+        0b00000011111111111111111111100111,  // 0xd5
+        0b00000111111111111111111111100010,  // 0xd6
+        0b00000000111111111111111111110010,  // 0xd7
+        0b00000000000111111111111111100100,  // 0xd8
+        0b00000000000111111111111111100101,  // 0xd9
+        0b00000011111111111111111111101000,  // 0xda
+        0b00000011111111111111111111101001,  // 0xdb
+        0b00001111111111111111111111111101,  // 0xdc
+        0b00000111111111111111111111100011,  // 0xdd
+        0b00000111111111111111111111100100,  // 0xde
+        0b00000111111111111111111111100101,  // 0xdf
+        0b00000000000011111111111111101100,  // 0xe0
+        0b00000000111111111111111111110011,  // 0xe1
+        0b00000000000011111111111111101101,  // 0xe2
+        0b00000000000111111111111111100110,  // 0xe3
+        0b00000000001111111111111111101001,  // 0xe4
+        0b00000000000111111111111111100111,  // 0xe5
+        0b00000000000111111111111111101000,  // 0xe6
+        0b00000000011111111111111111110011,  // 0xe7
+        0b00000000001111111111111111101010,  // 0xe8
+        0b00000000001111111111111111101011,  // 0xe9
+        0b00000001111111111111111111101110,  // 0xea
+        0b00000001111111111111111111101111,  // 0xeb
+        0b00000000111111111111111111110100,  // 0xec
+        0b00000000111111111111111111110101,  // 0xed
+        0b00000011111111111111111111101010,  // 0xee
+        0b00000000011111111111111111110100,  // 0xef
+        0b00000011111111111111111111101011,  // 0xf0
+        0b00000111111111111111111111100110,  // 0xf1
+        0b00000011111111111111111111101100,  // 0xf2
+        0b00000011111111111111111111101101,  // 0xf3
+        0b00000111111111111111111111100111,  // 0xf4
+        0b00000111111111111111111111101000,  // 0xf5
+        0b00000111111111111111111111101001,  // 0xf6
+        0b00000111111111111111111111101010,  // 0xf7
+        0b00000111111111111111111111101011,  // 0xf8
+        0b00001111111111111111111111111110,  // 0xf9
+        0b00000111111111111111111111101100,  // 0xfa
+        0b00000111111111111111111111101101,  // 0xfb
+        0b00000111111111111111111111101110,  // 0xfc
+        0b00000111111111111111111111101111,  // 0xfd
+        0b00000111111111111111111111110000,  // 0xfe
+        0b00000011111111111111111111101110,  // 0xff
+        0b00111111111111111111111111111111,  // 0x100
+    };
+
+    tree.push_back(HuffmanNode{});
+    for (int symbol = 0; symbol <= 256; ++symbol) {
+      uint8_t len = code_lengths[symbol];
+      uint32_t code = right_codes[symbol];
+      int curr = 0;
+      for (int i = len - 1; i >= 0; --i) {
+        int bit = (code >> i) & 1;
+        if (tree[curr].child[bit] == -1) {
+          tree[curr].child[bit] = tree.size();
+          tree.push_back(HuffmanNode{});
+        }
+        curr = tree[curr].child[bit];
+      }
+      tree[curr].symbol = symbol;
+    }
+  });
+  return tree;
+}
+
+inline bool DecodeHuffman(const uint8_t *buf, size_t len, std::string &out) {
+  const auto &tree = GetHuffmanTree();
+  int curr = 0;
+  out.clear();
+  for (size_t i = 0; i < len; ++i) {
+    uint8_t byte = buf[i];
+    for (int bit_idx = 7; bit_idx >= 0; --bit_idx) {
+      int bit = (byte >> bit_idx) & 1;
+      curr = tree[curr].child[bit];
+      if (curr == -1) return false;
+      if (tree[curr].symbol != -1) {
+        if (tree[curr].symbol == 256) {
+          return true;
+        }
+        out.push_back(static_cast<char>(tree[curr].symbol));
+        curr = 0;
+      }
+    }
+  }
+  return true;
+}
+
+inline void EncodeInteger(std::vector<uint8_t> &buf, uint64_t value,
+                          uint8_t prefix_mask) {
+  uint8_t max_prefix_val = prefix_mask;
+  if (value < max_prefix_val) {
+    buf.back() |= static_cast<uint8_t>(value);
+  } else {
+    buf.back() |= max_prefix_val;
+    value -= max_prefix_val;
+    while (value >= 128) {
+      buf.push_back(static_cast<uint8_t>((value % 128) + 128));
+      value /= 128;
+    }
+    buf.push_back(static_cast<uint8_t>(value));
+  }
+}
+
+inline bool DecodeInteger(const uint8_t *buf, size_t len, size_t &offset,
+                          uint8_t prefix_mask, uint64_t &result) {
+  if (offset >= len) return false;
+  uint8_t first = buf[offset++];
+  uint8_t val = first & prefix_mask;
+  if (val < prefix_mask) {
+    result = val;
+    return true;
+  }
+  uint64_t m = 0;
+  result = prefix_mask;
+  while (offset < len) {
+    uint8_t b = buf[offset++];
+    result += static_cast<uint64_t>(b & 127) << m;
+    m += 7;
+    if ((b & 128) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline bool DecodeString(const uint8_t *buf, size_t len, size_t &offset,
+                         std::string &out) {
+  if (offset >= len) return false;
+  uint8_t first = buf[offset];
+  bool is_huffman = (first & 128) != 0;
+  uint64_t str_len = 0;
+  if (!DecodeInteger(buf, len, offset, 127, str_len)) return false;
+  if (offset + str_len > len) return false;
+
+  if (is_huffman) {
+    if (!DecodeHuffman(buf + offset, str_len, out)) return false;
+  } else {
+    out.assign(reinterpret_cast<const char *>(buf + offset), str_len);
+  }
+  offset += str_len;
+  return true;
+}
+
+inline void EncodeString(std::vector<uint8_t> &buf, const std::string &str) {
+  buf.push_back(0);
+  EncodeInteger(buf, str.size(), 127);
+  buf.insert(buf.end(), str.begin(), str.end());
+}
+
+inline bool Decode(const uint8_t *buf, size_t len,
+                   std::vector<std::pair<std::string, std::string>> &headers) {
+  size_t offset = 0;
+  uint64_t req_insert_count = 0;
+  if (!DecodeInteger(buf, len, offset, 0xFF, req_insert_count)) return false;
+  if (offset >= len) return false;
+  uint64_t delta_base = 0;
+  if (!DecodeInteger(buf, len, offset, 0x7F, delta_base)) return false;
+
+  const auto &static_table = GetStaticTable();
+
+  while (offset < len) {
+    uint8_t type_byte = buf[offset];
+    if (type_byte & 128) {
+      bool is_static = (type_byte & 0x40) != 0;
+      uint64_t index = 0;
+      if (!DecodeInteger(buf, len, offset, 0x3F, index)) return false;
+      if (!is_static) return false;
+      if (index >= static_table.size()) return false;
+      headers.push_back({static_table[index].name, static_table[index].value});
+    } else if ((type_byte & 0xC0) == 0x40) {
+      bool is_static = (type_byte & 0x10) != 0;
+      uint64_t index = 0;
+      if (!DecodeInteger(buf, len, offset, 0x0F, index)) return false;
+      if (!is_static) return false;
+      if (index >= static_table.size()) return false;
+      std::string val;
+      if (!DecodeString(buf, len, offset, val)) return false;
+      headers.push_back({static_table[index].name, val});
+    } else if ((type_byte & 0xE0) == 0x20) {
+      bool is_huffman_name = (type_byte & 0x08) != 0;
+      uint64_t name_len = 0;
+      if (!DecodeInteger(buf, len, offset, 0x07, name_len)) return false;
+      if (offset + name_len > len) return false;
+
+      std::string name;
+      if (is_huffman_name) {
+        if (!DecodeHuffman(buf + offset, name_len, name)) return false;
+      } else {
+        name.assign(reinterpret_cast<const char *>(buf + offset), name_len);
+      }
+      offset += name_len;
+
+      std::string val;
+      if (!DecodeString(buf, len, offset, val)) return false;
+      headers.push_back({name, val});
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+inline std::vector<uint8_t> Encode(
+    const std::vector<std::pair<std::string, std::string>> &headers) {
+  std::vector<uint8_t> buf;
+  buf.push_back(0x00);
+  buf.push_back(0x00);
+
+  const auto &static_table = GetStaticTable();
+
+  for (const auto &p : headers) {
+    int exact_idx = -1;
+    int name_idx = -1;
+    for (size_t i = 0; i < static_table.size(); ++i) {
+      if (static_table[i].name == p.first) {
+        if (name_idx == -1) name_idx = static_cast<int>(i);
+        if (static_table[i].value == p.second) {
+          exact_idx = static_cast<int>(i);
+          break;
+        }
+      }
+    }
+
+    if (exact_idx != -1) {
+      buf.push_back(0xC0);
+      EncodeInteger(buf, exact_idx, 0x3F);
+    } else if (name_idx != -1) {
+      buf.push_back(0x50);
+      EncodeInteger(buf, name_idx, 0x0F);
+      EncodeString(buf, p.second);
+    } else {
+      buf.push_back(0x20);
+      EncodeInteger(buf, p.first.size(), 0x07);
+      buf.insert(buf.end(), p.first.begin(), p.first.end());
+      EncodeString(buf, p.second);
+    }
+  }
+  return buf;
+}
+
+}  // namespace qpack
+
+namespace http3 {
+
+inline bool DecodeVarint(const uint8_t *buf, size_t len, size_t &offset,
+                         uint64_t &result) {
+  if (offset >= len) return false;
+  uint8_t first = buf[offset++];
+  uint8_t type = (first >> 6) & 0x03;
+  uint64_t val = first & 0x3F;
+  int extra_bytes = 0;
+  if (type == 0)
+    extra_bytes = 0;
+  else if (type == 1)
+    extra_bytes = 1;
+  else if (type == 2)
+    extra_bytes = 3;
+  else if (type == 3)
+    extra_bytes = 7;
+
+  if (offset + extra_bytes > len) return false;
+  for (int i = 0; i < extra_bytes; ++i) {
+    val = (val << 8) | buf[offset++];
+  }
+  result = val;
+  return true;
+}
+
+inline void EncodeVarint(std::vector<uint8_t> &buf, uint64_t value) {
+  if (value <= 63) {
+    buf.push_back(static_cast<uint8_t>(value));
+  } else if (value <= 16383) {
+    buf.push_back(static_cast<uint8_t>((value >> 8) | 0x40));
+    buf.push_back(static_cast<uint8_t>(value & 0xFF));
+  } else if (value <= 1073741823) {
+    buf.push_back(static_cast<uint8_t>((value >> 24) | 0x80));
+    buf.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+    buf.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+    buf.push_back(static_cast<uint8_t>(value & 0xFF));
+  } else {
+    buf.push_back(static_cast<uint8_t>((value >> 56) | 0xC0));
+    buf.push_back(static_cast<uint8_t>((value >> 48) & 0xFF));
+    buf.push_back(static_cast<uint8_t>((value >> 40) & 0xFF));
+    buf.push_back(static_cast<uint8_t>((value >> 32) & 0xFF));
+    buf.push_back(static_cast<uint8_t>((value >> 24) & 0xFF));
+    buf.push_back(static_cast<uint8_t>((value >> 16) & 0xFF));
+    buf.push_back(static_cast<uint8_t>((value >> 8) & 0xFF));
+    buf.push_back(static_cast<uint8_t>(value & 0xFF));
+  }
+}
+
+inline std::vector<uint8_t> EncodeFrame(uint64_t type,
+                                        const std::vector<uint8_t> &payload) {
+  std::vector<uint8_t> buf;
+  EncodeVarint(buf, type);
+  EncodeVarint(buf, payload.size());
+  buf.insert(buf.end(), payload.begin(), payload.end());
+  return buf;
+}
+
+inline std::vector<uint8_t> GetSettingsPayload() {
+  std::vector<uint8_t> payload;
+  EncodeVarint(payload, 0x01);
+  EncodeVarint(payload, 0);
+  EncodeVarint(payload, 0x06);
+  EncodeVarint(payload, 1048576);
+  return payload;
+}
+
+inline std::string ReconstructHttp11Request(
+    const std::vector<std::pair<std::string, std::string>> &headers,
+    const std::vector<uint8_t> &body) {
+  std::string method = "GET";
+  std::string path = "/";
+  std::string host = "";
+  std::string req;
+
+  for (const auto &p : headers) {
+    if (p.first == ":method")
+      method = p.second;
+    else if (p.first == ":path")
+      path = p.second;
+    else if (p.first == ":authority")
+      host = p.second;
+  }
+
+  req += method + " " + path + " HTTP/1.1\r\n";
+  if (!host.empty()) {
+    req += "Host: " + host + "\r\n";
+  }
+
+  for (const auto &p : headers) {
+    if (p.first[0] == ':') continue;
+    if (p.first == "host" && !host.empty()) continue;
+    req += p.first + ": " + p.second + "\r\n";
+  }
+
+  req += "\r\n";
+  req.insert(req.end(), body.begin(), body.end());
+  return req;
+}
+
+inline bool ParseHttp11Response(
+    const std::string &data,
+    std::vector<std::pair<std::string, std::string>> &headers,
+    std::vector<uint8_t> &body) {
+  size_t pos = 0;
+  size_t line_end = data.find("\r\n", pos);
+  if (line_end == std::string::npos) return false;
+  std::string status_line = data.substr(pos, line_end - pos);
+  pos = line_end + 2;
+
+  size_t first_space = status_line.find(' ');
+  if (first_space != std::string::npos) {
+    size_t second_space = status_line.find(' ', first_space + 1);
+    std::string status_code =
+        status_line.substr(first_space + 1, second_space - first_space - 1);
+    headers.push_back({":status", status_code});
+  } else {
+    headers.push_back({":status", "200"});
+  }
+
+  while (pos < data.size()) {
+    size_t next_line = data.find("\r\n", pos);
+    if (next_line == std::string::npos) break;
+    if (next_line == pos) {
+      pos += 2;
+      break;
+    }
+    std::string line = data.substr(pos, next_line - pos);
+    pos = next_line + 2;
+
+    size_t colon = line.find(':');
+    if (colon != std::string::npos) {
+      std::string name = line.substr(0, colon);
+      std::string val = line.substr(colon + 1);
+      while (!name.empty() && name.back() == ' ') name.pop_back();
+      while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+      while (!val.empty() && val.back() == ' ') val.pop_back();
+      while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+      for (auto &c : name) c = std::tolower(c);
+      headers.push_back({name, val});
+    }
+  }
+
+  if (pos < data.size()) {
+    body.assign(data.begin() + pos, data.end());
+  }
+  return true;
+}
+
+}  // namespace http3
+
+// ============================================================================
+// Transport Abstractions (TCP & QUIC)
+// ============================================================================
+
+// TCP server transport wrapper
+class TcpServerTransport {
+ public:
+  struct ConnectionEvent {
+    uint64_t session_id;
+    cpptcpnet::ConnectionState state;
+  };
+  struct TransferEvent {
+    uint64_t session_id;
+    bool is_send;
+    size_t bytes_transferred;
+  };
+
+  TcpServerTransport(uint16_t port, const std::string &bind_address = "0.0.0.0")
+      : port_(port),
+        listener_(
+            std::make_shared<cpptcpnet::TcpListener>(port, bind_address)) {
+    state_sub_ =
+        listener_->GetEventBroker().Subscribe<cpptcpnet::ConnectionEvent>(
+            "state_events");
+    transfer_sub_ =
+        listener_->GetEventBroker().Subscribe<cpptcpnet::TransferEvent>(
+            "transfer_events");
+  }
+
+  void Start() { listener_->Start(); }
+
+  void Stop() { listener_->Stop(); }
+
+  uint16_t GetLocalPort() const { return port_; }
+
+  bool Send(uint64_t session_id, const std::string &data) {
+    return listener_->Send(session_id, data);
+  }
+
+  bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
+    return listener_->Send(session_id, data);
+  }
+
+  void Disconnect(uint64_t session_id) { listener_->Disconnect(session_id); }
+
+  cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
+    return listener_->GetConnectionProfile(session_id);
+  }
+
+  void ApplyConnectionProfile(uint64_t session_id,
+                              const cpptcpnet::ConnectionProfile &profile) {
+    listener_->ApplyConnectionProfile(session_id, profile);
+  }
+
+  cpptcpnet::PeerAddress GetPeerAddress(uint64_t session_id) const {
+    return listener_->GetPeerAddress(session_id);
+  }
+
+  std::optional<TransferEvent> TryReceiveTransferEvent() {
+    if (auto ev = transfer_sub_->try_receive()) {
+      return TransferEvent{ev->session_id, ev->is_send, ev->bytes_transferred};
+    }
+    return std::nullopt;
+  }
+
+  std::optional<ConnectionEvent> TryReceiveConnectionEvent() {
+    if (auto ev = state_sub_->try_receive()) {
+      return ConnectionEvent{ev->session_id, ev->state};
+    }
+    return std::nullopt;
+  }
+
+  void SetDataHandler(
+      std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+          handler) {
+    listener_->SetDataHandler(std::move(handler));
+  }
+
+  bool SupportsQuic() const { return false; }
+  bool IsQuicSession(uint64_t session_id) const { return false; }
+
+  cpptcpnet::TcpListener &GetListener() { return *listener_; }
+  const cpptcpnet::TcpListener &GetListener() const { return *listener_; }
+
+ private:
+  uint16_t port_;
+  std::shared_ptr<cpptcpnet::TcpListener> listener_;
+  std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::ConnectionEvent>> state_sub_;
+  std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::TransferEvent>>
+      transfer_sub_;
+};
+
+// TCP client transport wrapper
+class TcpClientTransport {
+ public:
+  TcpClientTransport() : session_id_(0) {}
+
+  ~TcpClientTransport() { Stop(); }
+
+  void EnableSSL() { ssl_enabled_ = true; }
+  void Start() {}
+  void Stop() {
+    std::unique_ptr<cpptcpnet::TcpClient> old_client;
+    std::unique_ptr<cpppubsub::Worker> old_worker;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      old_client = std::move(client_);
+      old_worker = std::move(worker_);
+      state_sub_.reset();
+      session_id_ = 0;
+    }
+    if (old_client || old_worker) {
+      std::thread([c = std::move(old_client), w = std::move(old_worker)]() {
+        if (c) c->Stop();
+        if (w) w->Stop();
+      }).detach();
+    }
+  }
+
+  uint64_t Connect(const std::string &host, uint16_t port,
+                   std::chrono::milliseconds timeout) {
+    Stop();
+
+    auto client = std::make_unique<cpptcpnet::TcpClient>();
+    if (ssl_enabled_) {
+      client->EnableSSL();
+    }
+    client->SetDataHandler(
+        [this](uint64_t session_id, const std::vector<uint8_t> &data) {
+          std::lock_guard<std::mutex> lock(mtx_);
+          if (session_id != session_id_) return;
+          if (data_handler_) {
+            data_handler_(session_id, data);
+          }
+        });
+
+    auto state_sub =
+        client->GetEventBroker().Subscribe<cpptcpnet::ConnectionEvent>(
+            "state_events");
+
+    auto connected = std::make_shared<std::atomic<bool>>(false);
+    auto disconnected = std::make_shared<std::atomic<bool>>(false);
+    auto connect_mtx = std::make_shared<std::mutex>();
+    auto connect_cv = std::make_shared<std::condition_variable>();
+
+    auto worker = std::make_unique<cpppubsub::Worker>();
+    worker->AddSubscription<cpptcpnet::ConnectionEvent>(
+        state_sub, [this, connected, disconnected, connect_mtx,
+                    connect_cv](const cpptcpnet::ConnectionEvent &e) {
+          {
+            std::lock_guard<std::mutex> lock(*connect_mtx);
+            if (e.session_id == 0) return;
+            if (e.state == cpptcpnet::ConnectionState::Disconnected) {
+              *disconnected = true;
+              connect_cv->notify_all();
+            } else if (e.state == cpptcpnet::ConnectionState::Connected) {
+              *connected = true;
+              connect_cv->notify_all();
+            }
+          }
+          if (e.state == cpptcpnet::ConnectionState::Disconnected) {
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (disconnect_handler_) {
+              disconnect_handler_();
+            }
+          }
+        });
+    worker->Start();
+    client->Start();
+
+    uint64_t sid = client->Connect(host, port);
+    if (sid == 0) {
+      client->Stop();
+      worker->Stop();
+      return 0;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      client_ = std::move(client);
+      worker_ = std::move(worker);
+      state_sub_ = state_sub;
+      session_id_ = sid;
+    }
+
+    std::unique_lock<std::mutex> lock(*connect_mtx);
+    if (!connect_cv->wait_for(lock, timeout, [&] {
+          return connected->load() || disconnected->load();
+        })) {
+      lock.unlock();
+      Stop();
+      return 0;
+    }
+    if (disconnected->load() || !connected->load()) {
+      lock.unlock();
+      Stop();
+      return 0;
+    }
+
+    return sid;
+  }
+
+  bool Send(uint64_t session_id, const std::string &data) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!client_ || session_id != session_id_) return false;
+    return client_->Send(session_id, data);
+  }
+
+  bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!client_ || session_id != session_id_) return false;
+    return client_->Send(session_id, data);
+  }
+
+  void SetDataHandler(
+      std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+          handler) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    data_handler_ = std::move(handler);
+  }
+
+  void SetDisconnectHandler(std::function<void()> handler) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    disconnect_handler_ = std::move(handler);
+  }
+
+  void StartRequest(uint64_t session_id) {}
+  void EndRequest(uint64_t session_id) {}
+
+  cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
+    std::lock_guard<std::mutex> lock(*const_cast<std::mutex *>(&mtx_));
+    if (!client_) {
+      throw std::runtime_error("Client not connected");
+    }
+    return client_->GetConnectionProfile(session_id);
+  }
+
+  std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::TransferEvent>>
+  GetTransferSubscriber() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (!client_) {
+      return std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::TransferEvent>>();
+    }
+    return client_->GetEventBroker().Subscribe<cpptcpnet::TransferEvent>(
+        "transfer_events");
+  }
+
+ private:
+  std::unique_ptr<cpptcpnet::TcpClient> client_;
+  std::unique_ptr<cpppubsub::Worker> worker_;
+  std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::ConnectionEvent>> state_sub_;
+  uint64_t session_id_ = 0;
+  bool ssl_enabled_ = false;
+  std::function<void(uint64_t, const std::vector<uint8_t> &)> data_handler_;
+  std::function<void()> disconnect_handler_;
+  std::mutex mtx_;
+};
+
+#ifdef CPPHTTP_ENABLE_QUIC
+// QUIC server transport wrapper
+class QuicServerTransport {
+ public:
+  struct ConnectionEvent {
+    uint64_t session_id;
+    cpptcpnet::ConnectionState state;
+  };
+  struct TransferEvent {
+    uint64_t session_id;
+    bool is_send;
+    size_t bytes_transferred;
+  };
+
+  QuicServerTransport(uint16_t port,
+                      const std::string &bind_address = "0.0.0.0")
+      : server_(port, bind_address) {
+    server_.SetStreamDataHandler(
+        [this](std::shared_ptr<cppquic::QuicConnection> conn,
+               uint64_t stream_id, const std::vector<uint8_t> &data,
+               bool fin) { HandleQuicStreamData(conn, stream_id, data, fin); });
+  }
+
+  void Start() {
+    conn_sub_ = server_.GetEventBroker().Subscribe<cppquic::ConnectionEvent>(
+        "connection_events");
+    server_.Start();
+  }
+
+  void Stop() {
+    server_.Stop();
+    std::lock_guard<std::mutex> lock(mapping_mutex_);
+    key_to_id_.clear();
+    id_to_key_.clear();
+    id_to_conn_.clear();
+  }
+
+  uint16_t GetLocalPort() const { return server_.GetLocalPort(); }
+
+  bool Send(uint64_t session_id, const std::string &data) {
+    std::shared_ptr<cppquic::QuicConnection> conn;
+    uint64_t stream_id = 0;
+    bool is_h3 = false;
+    {
+      std::lock_guard<std::mutex> lock(mapping_mutex_);
+      auto it = id_to_key_.find(session_id);
+      if (it == id_to_key_.end()) return false;
+      conn = id_to_conn_[session_id];
+      stream_id = it->second.stream_id;
+
+      auto conn_id = conn->GetLocalConnectionId();
+      auto conn_it = h3_connections_.find(conn_id);
+      if (conn_it != h3_connections_.end()) {
+        is_h3 = conn_it->second.is_http3;
+      }
+    }
+    if (!conn) return false;
+
+    if (is_h3) {
+      std::vector<std::pair<std::string, std::string>> headers;
+      std::vector<uint8_t> body;
+      if (http3::ParseHttp11Response(data, headers, body)) {
+        std::vector<uint8_t> qpack_block = qpack::Encode(headers);
+        std::vector<uint8_t> headers_frame =
+            http3::EncodeFrame(0x01, qpack_block);
+        std::vector<uint8_t> data_to_send = headers_frame;
+        if (!body.empty()) {
+          std::vector<uint8_t> data_frame = http3::EncodeFrame(0x00, body);
+          data_to_send.insert(data_to_send.end(), data_frame.begin(),
+                              data_frame.end());
+        }
+        server_.SendOnStream(conn, stream_id, data_to_send, true);
+      } else {
+        server_.SendOnStream(conn, stream_id, data);
+      }
+    } else {
+      server_.SendOnStream(conn, stream_id, data);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(events_mutex_);
+      transfer_events_.push_back({session_id, true, data.size()});
+    }
+    return true;
+  }
+
+  bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
+    std::string str(data.begin(), data.end());
+    return Send(session_id, str);
+  }
+
+  void Disconnect(uint64_t session_id) {
+    std::shared_ptr<cppquic::QuicConnection> conn;
+    uint64_t stream_id = 0;
+    {
+      std::lock_guard<std::mutex> lock(mapping_mutex_);
+      auto it = id_to_key_.find(session_id);
+      if (it != id_to_key_.end()) {
+        conn = id_to_conn_[session_id];
+        stream_id = it->second.stream_id;
+        key_to_id_.erase(it->second);
+        id_to_conn_.erase(session_id);
+        id_to_key_.erase(it);
+      }
+    }
+    if (conn) {
+      server_.SendOnStream(conn, stream_id, std::vector<uint8_t>{}, true);
+    }
+  }
+
+  cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
+    cpptcpnet::ConnectionProfile profile;
+    profile.max_outbound_buffer_size = 1024 * 1024;
+    profile.send_chunk_size = 65536;
+    return profile;
+  }
+
+  void ApplyConnectionProfile(uint64_t session_id,
+                              const cpptcpnet::ConnectionProfile &profile) {}
+
+  cpptcpnet::PeerAddress GetPeerAddress(uint64_t session_id) const {
+    std::shared_ptr<cppquic::QuicConnection> conn;
+    {
+      std::lock_guard<std::mutex> lock(mapping_mutex_);
+      auto it = id_to_conn_.find(session_id);
+      if (it != id_to_conn_.end()) {
+        conn = it->second;
+      }
+    }
+    cpptcpnet::PeerAddress addr;
+    if (conn) {
+      auto peer = conn->GetPeer();
+      addr.ip = peer.ip;
+      addr.port = peer.port;
+    }
+    return addr;
+  }
+
+  std::optional<TransferEvent> TryReceiveTransferEvent() {
+    std::lock_guard<std::mutex> lock(events_mutex_);
+    if (!transfer_events_.empty()) {
+      auto ev = transfer_events_.front();
+      transfer_events_.pop_front();
+      return ev;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<ConnectionEvent> TryReceiveConnectionEvent() {
+    if (conn_sub_) {
+      while (auto ev = conn_sub_->try_receive()) {
+        if (ev->state == cppquic::ConnectionState::Closed) {
+          std::vector<uint64_t> sessions_to_disconnect;
+          {
+            std::lock_guard<std::mutex> lock(mapping_mutex_);
+            h3_connections_.erase(ev->connection_id);
+            for (auto it = id_to_key_.begin(); it != id_to_key_.end();) {
+              if (it->second.conn_id == ev->connection_id) {
+                sessions_to_disconnect.push_back(it->first);
+                key_to_id_.erase(it->second);
+                id_to_conn_.erase(it->first);
+                it = id_to_key_.erase(it);
+              } else {
+                ++it;
+              }
+            }
+          }
+          std::lock_guard<std::mutex> lock(events_mutex_);
+          for (uint64_t session_id : sessions_to_disconnect) {
+            connection_events_.push_back(
+                {session_id, cpptcpnet::ConnectionState::Disconnected});
+          }
+        }
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(events_mutex_);
+    if (!connection_events_.empty()) {
+      auto ev = connection_events_.front();
+      connection_events_.pop_front();
+      return ev;
+    }
+    return std::nullopt;
+  }
+
+  void SetDataHandler(
+      std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+          handler) {
+    data_handler_ = std::move(handler);
+  }
+
+  bool SupportsQuic() const { return true; }
+  bool IsQuicSession(uint64_t session_id) const { return true; }
+
+  cppquic::QuicServer &GetServer() { return server_; }
+  const cppquic::QuicServer &GetServer() const { return server_; }
+
+ private:
+  struct SessionKey {
+    cppquic::ConnectionId conn_id;
+    uint64_t stream_id;
+    bool operator==(const SessionKey &o) const {
+      return conn_id == o.conn_id && stream_id == o.stream_id;
+    }
+  };
+  struct SessionKeyHash {
+    size_t operator()(const SessionKey &k) const {
+      return cppquic::ConnectionIdHash{}(k.conn_id) ^
+             std::hash<uint64_t>{}(k.stream_id);
+    }
+  };
+
+  void HandleQuicStreamData(std::shared_ptr<cppquic::QuicConnection> conn,
+                            uint64_t stream_id,
+                            const std::vector<uint8_t> &data, bool fin) {
+    uint64_t session_id = 0;
+    bool is_new = false;
+    bool is_h3_session = false;
+
+    {
+      std::lock_guard<std::mutex> lock(mapping_mutex_);
+      auto conn_id = conn->GetLocalConnectionId();
+      auto &conn_state = h3_connections_[conn_id];
+      conn_state.conn = conn;
+
+      if (!conn_state.is_http3 && !data.empty()) {
+        if (data[0] < 0x20) {
+          conn_state.is_http3 = true;
+
+          if (!conn_state.server_ctrl_opened) {
+            uint64_t ctrl_id = conn->AllocateStreamId(false);
+            std::vector<uint8_t> ctrl_payload = {0x00};
+            std::vector<uint8_t> settings_frame =
+                http3::EncodeFrame(0x04, http3::GetSettingsPayload());
+            ctrl_payload.insert(ctrl_payload.end(), settings_frame.begin(),
+                                settings_frame.end());
+            server_.SendOnStream(conn, ctrl_id, ctrl_payload);
+
+            uint64_t qpack_enc_id = conn->AllocateStreamId(false);
+            server_.SendOnStream(conn, qpack_enc_id,
+                                 std::vector<uint8_t>{0x02});
+
+            uint64_t qpack_dec_id = conn->AllocateStreamId(false);
+            server_.SendOnStream(conn, qpack_dec_id,
+                                 std::vector<uint8_t>{0x03});
+
+            conn_state.server_ctrl_opened = true;
+          }
+        }
+      }
+
+      is_h3_session = conn_state.is_http3;
+    }
+
+    if (is_h3_session) {
+      std::vector<uint8_t> h3_to_http11_data;
+      bool h3_request_complete = false;
+
+      {
+        std::lock_guard<std::mutex> lock(mapping_mutex_);
+        auto conn_id = conn->GetLocalConnectionId();
+        auto &conn_state = h3_connections_[conn_id];
+        auto &stream_state = conn_state.streams[stream_id];
+        stream_state.stream_id = stream_id;
+        stream_state.recv_buf.insert(stream_state.recv_buf.end(), data.begin(),
+                                     data.end());
+
+        if ((stream_id & 0x02) != 0) {
+          if (!stream_state.is_control && !stream_state.is_qpack_enc &&
+              !stream_state.is_qpack_dec && !stream_state.recv_buf.empty()) {
+            uint8_t type = stream_state.recv_buf.front();
+            stream_state.recv_buf.erase(stream_state.recv_buf.begin());
+            if (type == 0x00) {
+              stream_state.is_control = true;
+              conn_state.client_ctrl_stream_id = stream_id;
+            } else if (type == 0x02) {
+              stream_state.is_qpack_enc = true;
+            } else if (type == 0x03) {
+              stream_state.is_qpack_dec = true;
+            }
+          }
+
+          if (stream_state.is_control) {
+            size_t offset = 0;
+            while (offset < stream_state.recv_buf.size()) {
+              size_t frame_start = offset;
+              uint64_t type = 0, length = 0;
+              if (http3::DecodeVarint(stream_state.recv_buf.data(),
+                                      stream_state.recv_buf.size(), offset,
+                                      type) &&
+                  http3::DecodeVarint(stream_state.recv_buf.data(),
+                                      stream_state.recv_buf.size(), offset,
+                                      length)) {
+                if (offset + length <= stream_state.recv_buf.size()) {
+                  offset += length;
+                } else {
+                  offset = frame_start;
+                  break;
+                }
+              } else {
+                offset = frame_start;
+                break;
+              }
+            }
+            if (offset > 0) {
+              stream_state.recv_buf.erase(
+                  stream_state.recv_buf.begin(),
+                  stream_state.recv_buf.begin() + offset);
+            }
+          } else {
+            stream_state.recv_buf.clear();
+          }
+        } else {
+          size_t offset = 0;
+          while (offset < stream_state.recv_buf.size()) {
+            size_t frame_start = offset;
+            uint64_t type = 0, length = 0;
+            if (http3::DecodeVarint(stream_state.recv_buf.data(),
+                                    stream_state.recv_buf.size(), offset,
+                                    type) &&
+                http3::DecodeVarint(stream_state.recv_buf.data(),
+                                    stream_state.recv_buf.size(), offset,
+                                    length)) {
+              if (offset + length <= stream_state.recv_buf.size()) {
+                const uint8_t *payload = stream_state.recv_buf.data() + offset;
+                if (type == 0x01) {
+                  qpack::Decode(payload, length, stream_state.headers);
+                } else if (type == 0x00) {
+                  stream_state.body.insert(stream_state.body.end(), payload,
+                                           payload + length);
+                }
+                offset += length;
+              } else {
+                offset = frame_start;
+                break;
+              }
+            } else {
+              offset = frame_start;
+              break;
+            }
+          }
+          if (offset > 0) {
+            stream_state.recv_buf.erase(stream_state.recv_buf.begin(),
+                                        stream_state.recv_buf.begin() + offset);
+          }
+
+          if (fin) {
+            std::string req_str = http3::ReconstructHttp11Request(
+                stream_state.headers, stream_state.body);
+            h3_to_http11_data.assign(req_str.begin(), req_str.end());
+            h3_request_complete = true;
+          }
+        }
+      }
+
+      if (h3_request_complete) {
+        {
+          std::lock_guard<std::mutex> lock(mapping_mutex_);
+          SessionKey key{conn->GetLocalConnectionId(), stream_id};
+          auto it = key_to_id_.find(key);
+          if (it == key_to_id_.end()) {
+            session_id = next_session_id_++;
+            key_to_id_[key] = session_id;
+            id_to_key_[session_id] = key;
+            id_to_conn_[session_id] = conn;
+            is_new = true;
+          } else {
+            session_id = it->second;
+          }
+        }
+
+        if (is_new) {
+          std::lock_guard<std::mutex> lock(events_mutex_);
+          connection_events_.push_back(
+              {session_id, cpptcpnet::ConnectionState::Connected});
+        }
+
+        if (data_handler_ && !h3_to_http11_data.empty()) {
+          data_handler_(session_id, h3_to_http11_data);
+        }
+      }
+
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mapping_mutex_);
+      SessionKey key{conn->GetLocalConnectionId(), stream_id};
+      auto it = key_to_id_.find(key);
+      if (it == key_to_id_.end()) {
+        session_id = next_session_id_++;
+        key_to_id_[key] = session_id;
+        id_to_key_[session_id] = key;
+        id_to_conn_[session_id] = conn;
+        is_new = true;
+      } else {
+        session_id = it->second;
+      }
+    }
+
+    if (is_new) {
+      std::lock_guard<std::mutex> lock(events_mutex_);
+      connection_events_.push_back(
+          {session_id, cpptcpnet::ConnectionState::Connected});
+    }
+
+    if (data_handler_ && !data.empty()) {
+      data_handler_(session_id, data);
+    }
+
+    if (fin) {
+      std::lock_guard<std::mutex> lock(events_mutex_);
+      connection_events_.push_back(
+          {session_id, cpptcpnet::ConnectionState::Disconnected});
+    }
+  }
+
+  struct Http3StreamState {
+    uint64_t stream_id;
+    std::vector<uint8_t> recv_buf;
+    bool is_control = false;
+    bool is_qpack_enc = false;
+    bool is_qpack_dec = false;
+    std::vector<std::pair<std::string, std::string>> headers;
+    std::vector<uint8_t> body;
+  };
+  struct Http3ConnState {
+    std::shared_ptr<cppquic::QuicConnection> conn;
+    bool is_http3 = false;
+    bool server_ctrl_opened = false;
+    uint64_t client_ctrl_stream_id = 0xFFFFFFFFFFFFFFFFULL;
+    std::unordered_map<uint64_t, Http3StreamState> streams;
+  };
+  std::unordered_map<cppquic::ConnectionId, Http3ConnState,
+                     cppquic::ConnectionIdHash>
+      h3_connections_;
+
+  cppquic::QuicServer server_;
+  std::shared_ptr<cpppubsub::Subscriber<cppquic::ConnectionEvent>> conn_sub_;
+  std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+      data_handler_;
+
+  mutable std::mutex mapping_mutex_;
+  std::unordered_map<SessionKey, uint64_t, SessionKeyHash> key_to_id_;
+  std::unordered_map<uint64_t, SessionKey> id_to_key_;
+  mutable std::unordered_map<uint64_t, std::shared_ptr<cppquic::QuicConnection>>
+      id_to_conn_;
+  uint64_t next_session_id_ = 1;
+
+  mutable std::mutex events_mutex_;
+  std::deque<ConnectionEvent> connection_events_;
+  std::deque<TransferEvent> transfer_events_;
+};
+
+// QUIC client transport wrapper
+class QuicClientTransport {
+ public:
+  QuicClientTransport() {
+    client_.SetStreamDataHandler(
+        [this](uint64_t stream_id, const std::vector<uint8_t> &data, bool fin) {
+          std::lock_guard<std::mutex> lock(mtx_);
+          if (stream_id != active_stream_id_) return;
+          if (data_handler_ && !data.empty()) {
+            data_handler_(1, data);
+          }
+          if (fin) {
+            stream_finished_ = true;
+            if (disconnect_handler_) {
+              disconnect_handler_();
+            }
+          }
+        });
+
+    client_.SetErrorHandler([this](int code, const std::string &msg) {
+      std::lock_guard<std::mutex> lock(mtx_);
+      if (disconnect_handler_) {
+        disconnect_handler_();
+      }
+    });
+  }
+
+  void EnableSSL() {}
+  void Start() {}
+  void Stop() { client_.Stop(); }
+
+  uint64_t Connect(const std::string &host, uint16_t port,
+                   std::chrono::milliseconds timeout) {
+    client_.Start();
+    if (client_.Connect(host, port, timeout.count())) {
+      return 1;
+    }
+    return 0;
+  }
+
+  bool Send(uint64_t session_id, const std::string &data) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    client_.SendOnStream(active_stream_id_, data, false);
+    return true;
+  }
+
+  bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    client_.SendOnStream(active_stream_id_, data, false);
+    return true;
+  }
+
+  void SetDataHandler(
+      std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+          handler) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    data_handler_ = std::move(handler);
+  }
+
+  void SetDisconnectHandler(std::function<void()> handler) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    disconnect_handler_ = std::move(handler);
+  }
+
+  void StartRequest(uint64_t session_id) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    active_stream_id_ = client_.OpenStream(true);
+    stream_finished_ = false;
+  }
+
+  void EndRequest(uint64_t session_id) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    client_.SendOnStream(active_stream_id_, std::vector<uint8_t>{}, true);
+  }
+
+  cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
+    cpptcpnet::ConnectionProfile profile;
+    profile.max_outbound_buffer_size = 1024 * 1024;
+    profile.send_chunk_size = 65536;
+    return profile;
+  }
+
+  std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::TransferEvent>>
+  GetTransferSubscriber() {
+    return nullptr;
+  }
+
+  cppquic::QuicClient &GetClient() { return client_; }
+  const cppquic::QuicClient &GetClient() const { return client_; }
+
+ private:
+  cppquic::QuicClient client_;
+  uint64_t active_stream_id_ = 0;
+  bool stream_finished_ = false;
+  std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+      data_handler_;
+  std::function<void()> disconnect_handler_;
+  std::mutex mtx_;
+};
+
+class HybridServerTransport {
+ public:
+  struct ConnectionEvent {
+    uint64_t session_id;
+    cpptcpnet::ConnectionState state;
+  };
+  struct TransferEvent {
+    uint64_t session_id;
+    bool is_send;
+    size_t bytes_transferred;
+  };
+
+  HybridServerTransport(uint16_t port,
+                        const std::string &bind_address = "0.0.0.0")
+      : tcp_transport_(port, bind_address),
+        quic_transport_(port, bind_address) {}
+
+  void Start() {
+    tcp_transport_.Start();
+    quic_transport_.Start();
+  }
+
+  void Stop() {
+    tcp_transport_.Stop();
+    quic_transport_.Stop();
+    std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
+    tcp_sessions_.clear();
+  }
+
+  uint16_t GetLocalPort() const { return tcp_transport_.GetLocalPort(); }
+
+  static bool IsQuicSessionId(uint64_t session_id) {
+    return (session_id & (1ULL << 63)) != 0;
+  }
+
+  static uint64_t ToQuicSessionId(uint64_t original_id) {
+    return original_id | (1ULL << 63);
+  }
+
+  static uint64_t FromQuicSessionId(uint64_t session_id) {
+    return session_id & ~(1ULL << 63);
+  }
+
+  bool SupportsQuic() const { return true; }
+  bool IsQuicSession(uint64_t session_id) const {
+    std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
+    return tcp_sessions_.find(session_id) == tcp_sessions_.end();
+  }
+
+  bool Send(uint64_t session_id, const std::string &data) {
+    if (IsQuicSession(session_id)) {
+      return quic_transport_.Send(FromQuicSessionId(session_id), data);
+    } else {
+      return tcp_transport_.Send(session_id, data);
+    }
+  }
+
+  bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
+    if (IsQuicSession(session_id)) {
+      return quic_transport_.Send(FromQuicSessionId(session_id), data);
+    } else {
+      return tcp_transport_.Send(session_id, data);
+    }
+  }
+
+  void Disconnect(uint64_t session_id) {
+    if (IsQuicSession(session_id)) {
+      quic_transport_.Disconnect(FromQuicSessionId(session_id));
+    } else {
+      tcp_transport_.Disconnect(session_id);
+    }
+  }
+
+  cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
+    if (IsQuicSession(session_id)) {
+      return quic_transport_.GetConnectionProfile(
+          FromQuicSessionId(session_id));
+    } else {
+      return tcp_transport_.GetConnectionProfile(session_id);
+    }
+  }
+
+  void ApplyConnectionProfile(uint64_t session_id,
+                              const cpptcpnet::ConnectionProfile &profile) {
+    if (IsQuicSession(session_id)) {
+      quic_transport_.ApplyConnectionProfile(FromQuicSessionId(session_id),
+                                             profile);
+    } else {
+      tcp_transport_.ApplyConnectionProfile(session_id, profile);
+    }
+  }
+
+  cpptcpnet::PeerAddress GetPeerAddress(uint64_t session_id) const {
+    if (IsQuicSession(session_id)) {
+      return quic_transport_.GetPeerAddress(FromQuicSessionId(session_id));
+    } else {
+      return tcp_transport_.GetPeerAddress(session_id);
+    }
+  }
+
+  std::optional<TransferEvent> TryReceiveTransferEvent() {
+    if (auto ev = tcp_transport_.TryReceiveTransferEvent()) {
+      return TransferEvent{ev->session_id, ev->is_send, ev->bytes_transferred};
+    }
+    if (auto ev = quic_transport_.TryReceiveTransferEvent()) {
+      return TransferEvent{ToQuicSessionId(ev->session_id), ev->is_send,
+                           ev->bytes_transferred};
+    }
+    return std::nullopt;
+  }
+
+  std::optional<ConnectionEvent> TryReceiveConnectionEvent() {
+    if (auto ev = tcp_transport_.TryReceiveConnectionEvent()) {
+      std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
+      if (ev->state == cpptcpnet::ConnectionState::Connected) {
+        tcp_sessions_.insert(ev->session_id);
+      } else if (ev->state == cpptcpnet::ConnectionState::Disconnected) {
+        tcp_sessions_.erase(ev->session_id);
+      }
+      return ConnectionEvent{ev->session_id, ev->state};
+    }
+    if (auto ev = quic_transport_.TryReceiveConnectionEvent()) {
+      return ConnectionEvent{ToQuicSessionId(ev->session_id), ev->state};
+    }
+    return std::nullopt;
+  }
+
+  void SetDataHandler(
+      std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+          handler) {
+    data_handler_ = std::move(handler);
+    tcp_transport_.SetDataHandler(
+        [this](uint64_t session_id, const std::vector<uint8_t> &data) {
+          {
+            std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
+            tcp_sessions_.insert(session_id);
+          }
+          if (data_handler_) {
+            data_handler_(session_id, data);
+          }
+        });
+    quic_transport_.SetDataHandler(
+        [this](uint64_t session_id, const std::vector<uint8_t> &data) {
+          if (data_handler_) {
+            data_handler_(ToQuicSessionId(session_id), data);
+          }
+        });
+  }
+
+  cppquic::QuicServer &GetServer() { return quic_transport_.GetServer(); }
+  const cppquic::QuicServer &GetServer() const {
+    return quic_transport_.GetServer();
+  }
+
+  TcpServerTransport &GetTcpTransport() { return tcp_transport_; }
+  QuicServerTransport &GetQuicTransport() { return quic_transport_; }
+
+ private:
+  TcpServerTransport tcp_transport_;
+  QuicServerTransport quic_transport_;
+  std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
+      data_handler_;
+  mutable std::mutex tcp_sessions_mutex_;
+  std::unordered_set<uint64_t> tcp_sessions_;
+};
+#endif
 
 inline char safe_tolower(char c) {
   return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -1194,50 +2932,63 @@ inline std::vector<uint8_t> CreateWsFrame(uint8_t opcode,
 
 class WebSocketConnection {
  public:
-  WebSocketConnection(uint64_t session_id,
-                      std::shared_ptr<cpptcpnet::TcpListener> listener)
-      : session_id_(session_id), listener_(listener) {}
+  virtual ~WebSocketConnection() = default;
+  virtual uint64_t GetSessionId() const = 0;
+  virtual bool Send(const std::string &message) = 0;
+  virtual bool SendBinary(const std::vector<uint8_t> &data) = 0;
+  virtual bool Ping(const std::string &payload = "") = 0;
+  virtual void Close(uint16_t status_code = 1000,
+                     const std::string &reason = "") = 0;
+};
 
-  uint64_t GetSessionId() const { return session_id_; }
+template <typename Transport>
+class WebSocketConnectionImpl : public WebSocketConnection {
+ public:
+  WebSocketConnectionImpl(uint64_t session_id,
+                          std::shared_ptr<Transport> transport)
+      : session_id_(session_id), transport_(transport) {}
 
-  bool Send(const std::string &message) {
+  uint64_t GetSessionId() const override { return session_id_; }
+
+  bool Send(const std::string &message) override {
     auto frame = CreateWsFrame(0x01, message);
-    if (auto l = listener_.lock()) {
-      return l->Send(session_id_, frame);
+    if (auto t = transport_.lock()) {
+      return t->Send(session_id_, frame);
     }
     return false;
   }
 
-  bool SendBinary(const std::vector<uint8_t> &data) {
+  bool SendBinary(const std::vector<uint8_t> &data) override {
     auto frame = CreateWsFrame(0x02, data);
-    if (auto l = listener_.lock()) {
-      return l->Send(session_id_, frame);
+    if (auto t = transport_.lock()) {
+      return t->Send(session_id_, frame);
     }
     return false;
   }
 
-  bool Ping(const std::string &payload = "") {
+  bool Ping(const std::string &payload = "") override {
     auto frame = CreateWsFrame(0x09, payload);
-    if (auto l = listener_.lock()) {
-      return l->Send(session_id_, frame);
+    if (auto t = transport_.lock()) {
+      return t->Send(session_id_, frame);
     }
     return false;
   }
 
-  void Close(uint16_t status_code = 1000, const std::string &reason = "") {
+  void Close(uint16_t status_code = 1000,
+             const std::string &reason = "") override {
     std::vector<uint8_t> payload;
     payload.push_back(static_cast<uint8_t>((status_code >> 8) & 0xFF));
     payload.push_back(static_cast<uint8_t>(status_code & 0xFF));
     payload.insert(payload.end(), reason.begin(), reason.end());
     auto frame = CreateWsFrame(0x08, payload);
-    if (auto l = listener_.lock()) {
-      l->Send(session_id_, frame);
+    if (auto t = transport_.lock()) {
+      t->Send(session_id_, frame);
     }
   }
 
  private:
   uint64_t session_id_;
-  std::weak_ptr<cpptcpnet::TcpListener> listener_;
+  std::weak_ptr<Transport> transport_;
 };
 
 using WsConnectHandler =
@@ -1806,17 +3557,18 @@ class ResponseCache {
 /**
  * @brief A high-performance, asynchronous HTTP server built on cpptcpnet.
  */
-class HttpServer {
+template <typename Transport = TcpServerTransport>
+class HttpServerImpl {
  public:
   using RouteHandler = std::function<HttpResponse(const HttpRequest &)>;
   using Middleware = std::function<bool(HttpRequest &, HttpResponse &)>;
   using StreamHandler = std::function<std::optional<HttpResponse>(
       const HttpRequest &, const std::string &, bool)>;
 
-  HttpServer(const HttpServer &) = delete;
-  HttpServer &operator=(const HttpServer &) = delete;
-  HttpServer(HttpServer &&) = delete;
-  HttpServer &operator=(HttpServer &&) = delete;
+  HttpServerImpl(const HttpServerImpl &) = delete;
+  HttpServerImpl &operator=(const HttpServerImpl &) = delete;
+  HttpServerImpl(HttpServerImpl &&) = delete;
+  HttpServerImpl &operator=(HttpServerImpl &&) = delete;
 
   struct SessionState {
     std::mutex mutex;
@@ -1854,29 +3606,20 @@ class HttpServer {
   };
 
   /**
-   * @brief Constructs a new HttpServer.
+   * @brief Constructs a new HttpServerImpl.
    * @param port The port to listen on.
    * @param bind_address The IP address to bind the listener to (defaults to
    * "0.0.0.0").
    */
-  HttpServer(uint16_t port, const std::string &bind_address = "0.0.0.0")
-      : listener_(
-            std::make_shared<cpptcpnet::TcpListener>(port, bind_address)) {
-    listener_->SetDataHandler(
+  HttpServerImpl(uint16_t port, const std::string &bind_address = "0.0.0.0")
+      : transport_(std::make_shared<Transport>(port, bind_address)) {
+    transport_->SetDataHandler(
         [this](uint64_t session_id, const std::vector<uint8_t> &data) {
           this->HandleIncomingData(session_id, data);
         });
-
-    state_sub_ =
-        listener_->GetEventBroker().Subscribe<cpptcpnet::ConnectionEvent>(
-            "state_events");
-
-    transfer_sub_ =
-        listener_->GetEventBroker().Subscribe<cpptcpnet::TransferEvent>(
-            "transfer_events");
   }
 
-  ~HttpServer() {
+  ~HttpServerImpl() {
     Stop();
     if (background_thread_.joinable()) {
       background_thread_.join();
@@ -2090,7 +3833,7 @@ class HttpServer {
       background_thread_ = std::thread([this]() {
         while (running_) {
           bool idle = true;
-          if (auto event = transfer_sub_->try_receive()) {
+          if (auto event = transport_->TryReceiveTransferEvent()) {
             idle = false;
             if (event->is_send) {
               {
@@ -2104,7 +3847,7 @@ class HttpServer {
                     pending -= event->bytes_transferred;
                   }
                   if (pending == 0) {
-                    listener_->Disconnect(event->session_id);
+                    transport_->Disconnect(event->session_id);
                     sessions_to_close_.erase(it);
                     pending_send_bytes_.erase(event->session_id);
                   }
@@ -2133,7 +3876,7 @@ class HttpServer {
             }
           }
 
-          if (auto event = state_sub_->try_receive()) {
+          if (auto event = transport_->TryReceiveConnectionEvent()) {
             idle = false;
             if (event->state == cpptcpnet::ConnectionState::Disconnected) {
               std::shared_ptr<SessionState> session_to_close;
@@ -2175,7 +3918,7 @@ class HttpServer {
         }
       });
     }
-    listener_->Start();
+    transport_->Start();
   }
 
   void Stop() {
@@ -2183,7 +3926,7 @@ class HttpServer {
     {
       std::lock_guard<std::mutex> lock(shutdown_mutex_);
       if (!running_) {
-        listener_->Stop();
+        transport_->Stop();
         return;
       }
       running_ = false;
@@ -2193,15 +3936,17 @@ class HttpServer {
     if (thread_to_join.joinable()) {
       thread_to_join.join();
     }
-    listener_->Stop();
+    transport_->Stop();
     {
       std::lock_guard<std::mutex> lock(session_mutex_);
       sessions_.clear();
     }
   }
 
-  cpptcpnet::TcpListener &GetListener() { return *listener_; }
-  const cpptcpnet::TcpListener &GetListener() const { return *listener_; }
+  auto &GetListener() { return transport_->GetListener(); }
+  const auto &GetListener() const { return transport_->GetListener(); }
+  std::shared_ptr<Transport> GetTransport() { return transport_; }
+  std::shared_ptr<const Transport> GetTransport() const { return transport_; }
 
   void SetMaxHeaderSize(size_t size) { max_header_size_ = size; }
   size_t GetMaxHeaderSize() const { return max_header_size_; }
@@ -2244,6 +3989,9 @@ class HttpServer {
   void SetMinCompressionSize(size_t size) { min_compression_size_ = size; }
   size_t GetMinCompressionSize() const { return min_compression_size_; }
 
+  void SetAdvertiseAltSvc(bool enable) { advertise_alt_svc_ = enable; }
+  bool GetAdvertiseAltSvc() const { return advertise_alt_svc_; }
+
  private:
   struct Route {
     std::string method;
@@ -2258,7 +4006,7 @@ class HttpServer {
     WebSocketBehavior behavior;
   };
 
-  std::shared_ptr<cpptcpnet::TcpListener> listener_;
+  std::shared_ptr<Transport> transport_;
   std::thread background_thread_;
   // routes_ provides fast O(1) exact-match lookups for requests without
   // parameters.
@@ -2301,6 +4049,7 @@ class HttpServer {
   int zstd_level_ = 3;
   int gzip_level_ = Z_DEFAULT_COMPRESSION;
   size_t min_compression_size_ = 1024;
+  bool advertise_alt_svc_ = true;
 
   void PumpFileTransfer(uint64_t session_id,
                         std::shared_ptr<SessionState> session) {
@@ -2312,7 +4061,7 @@ class HttpServer {
     size_t chunk_size = 65536;
 
     try {
-      auto profile = listener_->GetConnectionProfile(session_id);
+      auto profile = transport_->GetConnectionProfile(session_id);
       max_flight = profile.max_outbound_buffer_size / 2;
       chunk_size = profile.send_chunk_size;
     } catch (const std::exception &) {
@@ -2363,7 +4112,7 @@ class HttpServer {
             chunk_stream << std::hex << compressed.size() << "\r\n"
                          << compressed << "\r\n";
             std::string formatted_chunk = chunk_stream.str();
-            if (listener_->Send(session_id, formatted_chunk)) {
+            if (transport_->Send(session_id, formatted_chunk)) {
               session->file_bytes_in_flight += formatted_chunk.size();
             } else {
               break;
@@ -2371,14 +4120,14 @@ class HttpServer {
           }
           if (is_eof) {
             std::string final_chunk = "0\r\n\r\n";
-            if (listener_->Send(session_id, final_chunk)) {
+            if (transport_->Send(session_id, final_chunk)) {
               session->file_bytes_in_flight += final_chunk.size();
             }
             session->compressed_stream_finished = true;
             break;
           }
         } else {
-          if (listener_->Send(session_id, raw_chunk)) {
+          if (transport_->Send(session_id, raw_chunk)) {
             session->file_bytes_in_flight += bytes_read;
           } else {
             break;
@@ -2403,12 +4152,12 @@ class HttpServer {
           chunk_stream << std::hex << compressed.size() << "\r\n"
                        << compressed << "\r\n";
           std::string formatted_chunk = chunk_stream.str();
-          if (listener_->Send(session_id, formatted_chunk)) {
+          if (transport_->Send(session_id, formatted_chunk)) {
             session->file_bytes_in_flight += formatted_chunk.size();
           }
         }
         std::string final_chunk = "0\r\n\r\n";
-        if (listener_->Send(session_id, final_chunk)) {
+        if (transport_->Send(session_id, final_chunk)) {
           session->file_bytes_in_flight += final_chunk.size();
         }
       }
@@ -2422,7 +4171,7 @@ class HttpServer {
         session->file_stream.reset();
         session->compressor.reset();
         if (session->should_close_after_file) {
-          listener_->Disconnect(session_id);
+          transport_->Disconnect(session_id);
         }
       }
     }
@@ -2458,7 +4207,7 @@ class HttpServer {
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
-        listener_->Send(session_id, response_data);
+        transport_->Send(session_id, response_data);
         return false;
       }
 
@@ -2471,7 +4220,7 @@ class HttpServer {
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
-        listener_->Send(session_id, response_data);
+        transport_->Send(session_id, response_data);
         return false;
       }
 
@@ -2513,7 +4262,7 @@ class HttpServer {
         if (handler_response->is_file) {
           headers_data =
               handler_response->Serialize(session->request.method, true);
-          listener_->Send(session_id, headers_data);
+          transport_->Send(session_id, headers_data);
           if (session->request.method != "HEAD") {
             session->is_streaming_file = true;
             session->file_stream = std::make_shared<std::ifstream>(
@@ -2538,7 +4287,7 @@ class HttpServer {
           }
         } else {
           response_data = handler_response->Serialize(session->request.method);
-          listener_->Send(session_id, response_data);
+          transport_->Send(session_id, response_data);
         }
       }
       buffer.erase(buffer.begin(), buffer.begin() + session->body_start_idx);
@@ -2606,7 +4355,7 @@ class HttpServer {
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
-        listener_->Send(session_id, response_data);
+        transport_->Send(session_id, response_data);
         return;
       }
       if (buffer.size() > 3) {
@@ -2652,7 +4401,7 @@ class HttpServer {
             return;
           } else if (frame.opcode == 0x09) {
             auto pong_frame = CreateWsFrame(0x0A, frame.payload);
-            listener_->Send(session_id, pong_frame);
+            transport_->Send(session_id, pong_frame);
           } else if (frame.opcode == 0x0A) {
             // Handle Pong
           } else if (frame.opcode == 0x01 || frame.opcode == 0x02 ||
@@ -2776,7 +4525,7 @@ class HttpServer {
               session->request.client_ip = forwarded;
             }
           } else {
-            auto peer_addr = listener_->GetPeerAddress(session_id);
+            auto peer_addr = transport_->GetPeerAddress(session_id);
             session->request.client_ip = peer_addr.ip;
           }
 
@@ -2791,7 +4540,7 @@ class HttpServer {
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
-            listener_->Send(session_id, response_data);
+            transport_->Send(session_id, response_data);
             return;
           }
 
@@ -2825,7 +4574,7 @@ class HttpServer {
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
-        listener_->Send(session_id, response_data);
+        transport_->Send(session_id, response_data);
         return;
       }
 
@@ -2841,7 +4590,7 @@ class HttpServer {
             request.client_ip = forwarded;
           }
         } else {
-          auto peer_addr = listener_->GetPeerAddress(session_id);
+          auto peer_addr = transport_->GetPeerAddress(session_id);
           request.client_ip = peer_addr.ip;
         }
 
@@ -2859,7 +4608,7 @@ class HttpServer {
             sessions_to_close_.insert(session_id);
             pending_send_bytes_[session_id] = response_data.size();
           }
-          listener_->Send(session_id, response_data);
+          transport_->Send(session_id, response_data);
           return;
         }
 
@@ -2898,7 +4647,7 @@ class HttpServer {
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
-            listener_->Send(session_id, response_data);
+            transport_->Send(session_id, response_data);
             return;
           }
 
@@ -2911,7 +4660,7 @@ class HttpServer {
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
-            listener_->Send(session_id, response_data);
+            transport_->Send(session_id, response_data);
             return;
           }
 
@@ -2933,7 +4682,7 @@ class HttpServer {
                 sessions_to_close_.insert(session_id);
                 pending_send_bytes_[session_id] = response_data.size();
               }
-              listener_->Send(session_id, response_data);
+              transport_->Send(session_id, response_data);
               return;
             }
           }
@@ -2948,7 +4697,7 @@ class HttpServer {
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
-            listener_->Send(session_id, response_data);
+            transport_->Send(session_id, response_data);
             return;
           }
 
@@ -2980,6 +4729,15 @@ class HttpServer {
 
         HttpResponse response =
             DispatchRequest(request, session_id, upgrade_to_ws, ws_behavior);
+
+        if (advertise_alt_svc_ && transport_->SupportsQuic() &&
+            !transport_->IsQuicSession(session_id)) {
+          if (response.headers.find("Alt-Svc") == response.headers.end()) {
+            response.headers["Alt-Svc"] =
+                "h3=\":" + std::to_string(transport_->GetLocalPort()) +
+                "\"; ma=86400";
+          }
+        }
 
         if (should_close && !upgrade_to_ws) {
           response.headers["Connection"] = "close";
@@ -3053,7 +4811,7 @@ class HttpServer {
         }
 
         if (response.is_file) {
-          listener_->Send(session_id, headers_data);
+          transport_->Send(session_id, headers_data);
           if (request.method != "HEAD") {
             session->is_streaming_file = true;
             session->file_stream = std::make_shared<std::ifstream>(
@@ -3092,15 +4850,16 @@ class HttpServer {
             PumpFileTransfer(session_id, session);
           }
         } else {
-          listener_->Send(session_id, response_data);
+          transport_->Send(session_id, response_data);
         }
 
         if (upgrade_to_ws) {
-          listener_->ApplyConnectionProfile(session_id,
-                                            ws_behavior.connection_profile);
+          transport_->ApplyConnectionProfile(session_id,
+                                             ws_behavior.connection_profile);
           session->is_websocket = true;
           session->ws_connection =
-              std::make_shared<WebSocketConnection>(session_id, listener_);
+              std::make_shared<WebSocketConnectionImpl<Transport>>(session_id,
+                                                                   transport_);
           session->ws_behavior = ws_behavior;
 
           buffer.erase(buffer.begin(),
@@ -3137,7 +4896,7 @@ class HttpServer {
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
-        listener_->Send(session_id, response_data);
+        transport_->Send(session_id, response_data);
         return;
       }
     }
@@ -3398,6 +5157,13 @@ class HttpServer {
   }
 };
 
+using HttpServer = HttpServerImpl<TcpServerTransport>;
+
+#ifdef CPPHTTP_ENABLE_QUIC
+using QuicHttpServer = HttpServerImpl<QuicServerTransport>;
+using HybridHttpServer = HttpServerImpl<HybridServerTransport>;
+#endif
+
 inline std::atomic<size_t> &GetClientWorkerPoolSize() {
   static std::atomic<size_t> size = []() {
     size_t cores = std::thread::hardware_concurrency();
@@ -3417,18 +5183,19 @@ inline std::shared_ptr<cppasyncworker::WorkerPool> GetClientWorkerPool() {
   return pool;
 }
 
-class HttpClient {
+template <typename Transport = TcpClientTransport>
+class HttpClientImpl {
  public:
-  HttpClient(const std::string &host, uint16_t port,
-             std::shared_ptr<cppasyncworker::WorkerPool> pool = nullptr)
+  HttpClientImpl(const std::string &host, uint16_t port,
+                 std::shared_ptr<cppasyncworker::WorkerPool> pool = nullptr)
       : host_(host), port_(port), pool_(pool ? pool : GetClientWorkerPool()) {}
 
-  HttpClient(const HttpClient &) = delete;
-  HttpClient &operator=(const HttpClient &) = delete;
-  HttpClient(HttpClient &&) = delete;
-  HttpClient &operator=(HttpClient &&) = delete;
+  HttpClientImpl(const HttpClientImpl &) = delete;
+  HttpClientImpl &operator=(const HttpClientImpl &) = delete;
+  HttpClientImpl(HttpClientImpl &&) = delete;
+  HttpClientImpl &operator=(HttpClientImpl &&) = delete;
 
-  ~HttpClient() {
+  ~HttpClientImpl() {
     {
       std::lock_guard<std::mutex> lock(tasks_mutex_);
       *alive_ = false;
@@ -3667,6 +5434,28 @@ class HttpClient {
     return SendRequestInternal(method, path, body, headers, 0);
   }
 
+  void SetDisconnectHandler(std::function<void()> handler) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    disconnect_handler_ = std::move(handler);
+  }
+
+  void StartRequest(uint64_t session_id) {}
+  void EndRequest(uint64_t session_id) {}
+
+  cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
+    std::lock_guard<std::mutex> lock(*const_cast<std::mutex *>(&mtx_));
+    return client_.GetConnectionProfile(session_id);
+  }
+
+  std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::TransferEvent>>
+  GetTransferSubscriber() {
+    std::lock_guard<std::mutex> lock(mtx_);
+    return client_.GetTransferSubscriber();
+  }
+
+  Transport &GetTransport() { return client_; }
+  const Transport &GetTransport() const { return client_; }
+
  private:
   struct ParsedResponseHeader {
     std::string status_code_str;
@@ -3694,9 +5483,7 @@ class HttpClient {
   size_t max_header_size_ = 8192;
   int max_redirects_ = 5;
 
-  std::unique_ptr<cpptcpnet::TcpClient> client_;
-  std::unique_ptr<cpppubsub::Worker> worker_;
-  std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::ConnectionEvent>> state_sub_;
+  Transport client_;
   uint64_t session_id_ = 0;
   std::atomic<bool> connected_{false};
   std::atomic<bool> disconnected_{false};
@@ -3704,32 +5491,17 @@ class HttpClient {
   std::mutex mtx_;
   std::condition_variable cv_;
   std::mutex request_mutex_;
+  std::function<void()> disconnect_handler_;
 
   std::vector<std::shared_future<void>> pending_tasks_;
   std::mutex tasks_mutex_;
 
   void CleanUpConnection() {
-    std::unique_ptr<cpptcpnet::TcpClient> old_client;
-    std::unique_ptr<cpppubsub::Worker> old_worker;
-    std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::ConnectionEvent>> old_sub;
-
-    {
-      std::lock_guard<std::mutex> lock(mtx_);
-      old_client = std::move(client_);
-      old_worker = std::move(worker_);
-      old_sub = std::move(state_sub_);
-      session_id_ = 0;
-      connected_ = false;
-      disconnected_ = false;
-      buffer_.clear();
-    }
-
-    if (old_client || old_worker) {
-      std::thread([c = std::move(old_client), w = std::move(old_worker)]() {
-        if (c) c->Stop();
-        if (w) w->Stop();
-      }).detach();
-    }
+    client_.Stop();
+    session_id_ = 0;
+    connected_ = false;
+    disconnected_ = false;
+    buffer_.clear();
   }
 
   void EnsureConnected() {
@@ -3739,17 +5511,12 @@ class HttpClient {
 
     CleanUpConnection();
 
-    client_ = std::make_unique<cpptcpnet::TcpClient>();
     if (ssl_enabled_) {
-      client_->EnableSSL();
+      client_.EnableSSL();
     }
 
-    buffer_.clear();
-    disconnected_ = false;
-    connected_ = false;
-
-    client_->SetDataHandler([this](uint64_t session_id,
-                                   const std::vector<uint8_t> &data) {
+    client_.SetDataHandler([this](uint64_t session_id,
+                                  const std::vector<uint8_t> &data) {
       std::lock_guard<std::mutex> lock(mtx_);
       if (session_id != session_id_ || session_id == 0) {
         return;
@@ -3775,46 +5542,22 @@ class HttpClient {
       cv_.notify_all();
     });
 
-    state_sub_ =
-        client_->GetEventBroker().Subscribe<cpptcpnet::ConnectionEvent>(
-            "state_events");
-    worker_ = std::make_unique<cpppubsub::Worker>();
-    worker_->AddSubscription<cpptcpnet::ConnectionEvent>(
-        state_sub_, [this](const cpptcpnet::ConnectionEvent &e) {
-          std::lock_guard<std::mutex> lock(mtx_);
-          if (e.session_id != session_id_ || e.session_id == 0) {
-            return;
-          }
-          if (e.state == cpptcpnet::ConnectionState::Disconnected) {
-            disconnected_ = true;
-            connected_ = false;
-            cv_.notify_all();
-          } else if (e.state == cpptcpnet::ConnectionState::Connected) {
-            connected_ = true;
-            cv_.notify_all();
-          }
-        });
-    worker_->Start();
-    client_->Start();
+    client_.SetDisconnectHandler([this]() {
+      std::lock_guard<std::mutex> lock(mtx_);
+      disconnected_ = true;
+      connected_ = false;
+      cv_.notify_all();
+      if (disconnect_handler_) disconnect_handler_();
+    });
 
-    session_id_ = client_->Connect(host_, port_);
-    if (session_id_ == 0) {
+    uint64_t sid = client_.Connect(host_, port_, timeout_);
+    if (sid == 0) {
       CleanUpConnection();
       throw std::runtime_error("Failed to connect to server");
     }
 
-    std::unique_lock<std::mutex> lock(mtx_);
-    if (!cv_.wait_for(lock, timeout_,
-                      [&] { return connected_ || disconnected_; })) {
-      lock.unlock();
-      CleanUpConnection();
-      throw std::runtime_error("Connection timeout");
-    }
-    if (disconnected_ || !connected_) {
-      lock.unlock();
-      CleanUpConnection();
-      throw std::runtime_error("Connection failed during handshake");
-    }
+    session_id_ = sid;
+    connected_ = true;
   }
 
   HttpResponse ReadResponse(
@@ -4119,10 +5862,9 @@ class HttpClient {
     }
 
     EnsureConnected();
+    client_.StartRequest(session_id_);
 
-    auto transfer_sub =
-        client_->GetEventBroker().Subscribe<cpptcpnet::TransferEvent>(
-            "transfer_events");
+    auto transfer_sub = client_.GetTransferSubscriber();
 
     std::ostringstream request_stream;
     request_stream << method << " " << path << " HTTP/1.1\r\n";
@@ -4170,7 +5912,7 @@ class HttpClient {
     }
     request_stream << "\r\n";
 
-    if (!client_->Send(session_id_, request_stream.str())) {
+    if (!client_.Send(session_id_, request_stream.str())) {
       CleanUpConnection();
       throw std::runtime_error("Failed to send request headers");
     }
@@ -4183,19 +5925,21 @@ class HttpClient {
       if (!*alive_) {
         throw std::runtime_error("HttpClient destroyed");
       }
-      while (auto event = transfer_sub->try_receive()) {
-        if (event->is_send && event->session_id == session_id_) {
-          if (client_bytes_in_flight >= event->bytes_transferred) {
-            client_bytes_in_flight -= event->bytes_transferred;
-          } else {
-            client_bytes_in_flight = 0;
+      if (transfer_sub) {
+        while (auto event = transfer_sub->try_receive()) {
+          if (event->is_send && event->session_id == session_id_) {
+            if (client_bytes_in_flight >= event->bytes_transferred) {
+              client_bytes_in_flight -= event->bytes_transferred;
+            } else {
+              client_bytes_in_flight = 0;
+            }
           }
         }
       }
 
       size_t max_flight = 65536;
       try {
-        auto profile = client_->GetConnectionProfile(session_id_);
+        auto profile = client_.GetConnectionProfile(session_id_);
         max_flight = profile.max_outbound_buffer_size / 2;
       } catch (const std::exception &) {
         CleanUpConnection();
@@ -4203,7 +5947,7 @@ class HttpClient {
       }
       if (max_flight < 65536) max_flight = 65536;
 
-      if (client_bytes_in_flight >= max_flight) {
+      if (transfer_sub && client_bytes_in_flight >= max_flight) {
 #ifdef _WIN32
         WaitForSingleObject(transfer_sub->GetWaitHandle(), 5);
 #else
@@ -4224,7 +5968,7 @@ class HttpClient {
       if (chunk.empty()) {
         if (is_chunked) {
           std::string final_chunk = "0\r\n\r\n";
-          client_->Send(session_id_, final_chunk);
+          client_.Send(session_id_, final_chunk);
         }
         break;
       }
@@ -4239,14 +5983,18 @@ class HttpClient {
       }
 
       size_t payload_bytes = payload_to_send.size();
-      if (client_->Send(session_id_, payload_to_send)) {
-        client_bytes_in_flight += payload_bytes;
+      if (client_.Send(session_id_, payload_to_send)) {
+        if (transfer_sub) {
+          client_bytes_in_flight += payload_bytes;
+        }
         total_sent += chunk.size();
       } else {
         CleanUpConnection();
         throw std::runtime_error("Failed to send chunk");
       }
     }
+
+    client_.EndRequest(session_id_);
 
     std::unique_lock<std::mutex> lock(mtx_);
     HttpResponse http_response = ReadResponse(lock, method, nullptr);
@@ -4286,7 +6034,7 @@ class HttpClient {
                                                headers, redirect_depth + 1);
               }
             } else {
-              HttpClient new_client(r_host, r_port);
+              HttpClientImpl<Transport> new_client(r_host, r_port);
               if (r_proto == "https") {
                 new_client.EnableSSL();
               }
@@ -4338,6 +6086,7 @@ class HttpClient {
     }
 
     EnsureConnected();
+    client_.StartRequest(session_id_);
 
     std::ostringstream request_stream;
     request_stream << method << " " << path << " HTTP/1.1\r\n";
@@ -4385,10 +6134,12 @@ class HttpClient {
       request_stream << body;
     }
 
-    if (!client_->Send(session_id_, request_stream.str())) {
+    if (!client_.Send(session_id_, request_stream.str())) {
       CleanUpConnection();
       throw std::runtime_error("Failed to send request");
     }
+
+    client_.EndRequest(session_id_);
 
     std::unique_lock<std::mutex> lock(mtx_);
     HttpResponse http_response = ReadResponse(lock, method, on_chunk);
@@ -4418,7 +6169,7 @@ class HttpClient {
               return SendRequestInternal(next_method, r_path, next_body,
                                          headers, redirect_depth + 1, on_chunk);
             } else {
-              HttpClient new_client(r_host, r_port);
+              HttpClientImpl<Transport> new_client(r_host, r_port);
               if (r_proto == "https") {
                 new_client.EnableSSL();
               }
@@ -4492,6 +6243,8 @@ class HttpClient {
     return req;
   }
 };
+
+using HttpClient = HttpClientImpl<TcpClientTransport>;
 
 class WebSocketClient {
  public:

@@ -1,4 +1,6 @@
+#include <filesystem>
 #include <iostream>
+#include <string>
 
 #include "cpphttp.hpp"
 
@@ -579,6 +581,45 @@ const char *UI_HTML = R"html(<!DOCTYPE html>
 </html>
 )html";
 
+std::string FindCertFile(const std::string &filename) {
+  // 1. Try current working directory
+  if (std::filesystem::exists(filename)) {
+    return filename;
+  }
+  // 2. Try certs/filename
+  std::string path = "certs/" + filename;
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+  // 3. Try parent directories (for build/Debug or build-windows/Debug etc.)
+  path = "../certs/" + filename;
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+  path = "../../certs/" + filename;
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+  path = "../../../certs/" + filename;
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+  // 4. Try compile-time configured directory
+#ifdef CPPHTTP_CERTS_DIR
+  path = std::string(CPPHTTP_CERTS_DIR) + "/" + filename;
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+#endif
+  // 5. Try hardcoded Dev Container path as fallback
+  path = "/workspaces/cpp-http/certs/" + filename;
+  if (std::filesystem::exists(path)) {
+    return path;
+  }
+  // If nothing else, return the default
+  return "certs/" + filename;
+}
+
 int main() {
   uint16_t port = 8087;
   // Construct HttpServer on port 8087
@@ -586,8 +627,8 @@ int main() {
 
   // Configure SSL certificates from certs/ directory
   cpptcpnet::TcpListener::SslConfig ssl_config;
-  ssl_config.cert_file = "/workspaces/cpp-http/certs/server.crt";
-  ssl_config.key_file = "/workspaces/cpp-http/certs/server.key";
+  ssl_config.cert_file = FindCertFile("server.crt");
+  ssl_config.key_file = FindCertFile("server.key");
   try {
     server.GetListener().EnableSSL(ssl_config);
     std::cout << "SSL support enabled." << std::endl;

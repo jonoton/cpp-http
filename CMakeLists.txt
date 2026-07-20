@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(cpphttp LANGUAGES CXX)
 
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -26,6 +27,18 @@ FetchContent_Declare(
   GIT_TAG ${CPPHTTP_TCPNET_TAG}
 )
 FetchContent_MakeAvailable(cpptcpnet)
+
+option(CPPHTTP_ENABLE_QUIC "Enable HTTP over QUIC using cpp-quic" ON)
+if(CPPHTTP_ENABLE_QUIC)
+    add_compile_definitions(CPPHTTP_ENABLE_QUIC)
+    set(CPPHTTP_QUIC_TAG "main" CACHE STRING "Git tag/branch to use for cpp-quic dependency")
+    FetchContent_Declare(
+      cppquic
+      GIT_REPOSITORY https://github.com/jonoton/cpp-quic.git
+      GIT_TAG ${CPPHTTP_QUIC_TAG}
+    )
+    FetchContent_MakeAvailable(cppquic)
+endif()
 
 find_package(ZLIB QUIET)
 if(NOT ZLIB_FOUND)
@@ -92,6 +105,9 @@ target_include_directories(cpphttp INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(cpphttp INTERFACE cxx_std_17)
 
 target_link_libraries(cpphttp INTERFACE cpptcpnet::cpptcpnet ZLIB::ZLIB)
+if(CPPHTTP_ENABLE_QUIC)
+    target_link_libraries(cpphttp INTERFACE cppquic::cppquic)
+endif()
 
 if(TARGET brotlienc)
     target_link_libraries(cpphttp INTERFACE brotlienc brotlidec brotlicommon)
@@ -109,30 +125,43 @@ endif()
 
 # Determine if this is the top-level project
 if(CMAKE_PROJECT_NAME STREQUAL PROJECT_NAME)
-    set(IS_TOP_LEVEL ON)
+    set(CPPHTTP_IS_TOP_LEVEL ON)
 else()
-    set(IS_TOP_LEVEL OFF)
+    set(CPPHTTP_IS_TOP_LEVEL OFF)
 endif()
 
-if(IS_TOP_LEVEL)
+if(CPPHTTP_IS_TOP_LEVEL)
     set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 endif()
 
 # Option to build examples
-option(CPPHTTP_BUILD_EXAMPLES "Build the example programs" ${IS_TOP_LEVEL})
+option(CPPHTTP_BUILD_EXAMPLES "Build the example programs" ${CPPHTTP_IS_TOP_LEVEL})
 
 if(CPPHTTP_BUILD_EXAMPLES)
+    # Replace backslashes with forward slashes to prevent C++ escape character issues on Windows
+    string(REPLACE "\\" "/" SAFE_PROJECT_SOURCE_DIR "${PROJECT_SOURCE_DIR}")
+
     add_executable(websocket_example examples/websocket_example.cpp)
     target_link_libraries(websocket_example PRIVATE cpphttp::cpphttp)
+    target_compile_definitions(websocket_example PRIVATE "CPPHTTP_CERTS_DIR=\"${SAFE_PROJECT_SOURCE_DIR}/certs\"")
     
     add_executable(spa_example examples/spa_example.cpp)
     target_link_libraries(spa_example PRIVATE cpphttp::cpphttp)
     
     add_executable(download_example examples/download_example.cpp)
     target_link_libraries(download_example PRIVATE cpphttp::cpphttp)
+    
+    if(CPPHTTP_ENABLE_QUIC)
+        add_executable(quic_http_server examples/quic_http_server.cpp)
+        target_link_libraries(quic_http_server PRIVATE cpphttp::cpphttp)
+        target_compile_definitions(quic_http_server PRIVATE "CPPHTTP_CERTS_DIR=\"${SAFE_PROJECT_SOURCE_DIR}/certs\"")
+        
+        add_executable(quic_http_client examples/quic_http_client.cpp)
+        target_link_libraries(quic_http_client PRIVATE cpphttp::cpphttp)
+    endif()
 endif()
 
-option(CPPHTTP_BUILD_TESTS "Build the unit tests" ${IS_TOP_LEVEL})
+option(CPPHTTP_BUILD_TESTS "Build the unit tests" ${CPPHTTP_IS_TOP_LEVEL})
 
 if(CPPHTTP_BUILD_TESTS)
     enable_testing()

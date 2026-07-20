@@ -593,5 +593,113 @@ The client-side `WebSocketClient` exposes:
 * `void Close(uint16_t status_code, const std::string &reason)`: Closes the connection cleanly.
 * `void Disconnect()`: Immediately terminates connection.
 
+## HTTP-over-QUIC & Hybrid Transports
+
+`cpp-http` provides comprehensive support for HTTP-over-QUIC (analogous to HTTP/3) when compiled with QUIC enabled (`CPPHTTP_ENABLE_QUIC`). This includes dedicated QUIC servers, QUIC clients, and a dual TCP/UDP hybrid server model.
+
+### 1. Architecture & Transport Classes
+
+The library abstracts the network protocol via transport templates. The core server and client classes are `HttpServerImpl<Transport>` and `HttpClientImpl<Transport>`. 
+
+Depending on your compilation options, the following aliases are available:
+
+| Class / Type Alias | Underlying Transport | Protocol / socket |
+| :--- | :--- | :--- |
+| `HttpServer` | `TcpServerTransport` | TCP (Standard HTTP / HTTPS) |
+| `HttpClient` | `TcpClientTransport` | TCP (Standard HTTP / HTTPS client) |
+| `QuicHttpServer` | `QuicServerTransport` | UDP (HTTP over QUIC server) |
+| `HybridHttpServer` | `HybridServerTransport` | TCP & UDP (Dual HTTPS & QUIC server) |
+
+### 2. Hybrid HTTP/QUIC Server
+
+A `HybridHttpServer` hosts both a standard TCP (HTTPS) listener and a UDP (QUIC) listener on the same port. 
+By default, the server automatically injects the `Alt-Svc` header into TCP responses to advertise QUIC support to client browsers (e.g., `Alt-Svc: h3=":4433"`).
+
+#### Configuration Example
+
+Below is a demonstration of setting up a hybrid server with SSL certificates:
+
+```cpp
+#include "cpphttp.hpp"
+#include <iostream>
+
+int main() {
+    uint16_t port = 4433;
+    
+    try {
+        cpphttp::HybridHttpServer server(port);
+
+        // 1. Configure SSL/TLS certificates for HTTPS on the TCP listener
+        cpptcpnet::TcpListener::SslConfig ssl_config;
+        ssl_config.cert_file = "certs/server.crt";
+        ssl_config.key_file = "certs/server.key";
+
+        try {
+            server.GetTransport()->GetTcpTransport().GetListener().EnableSSL(ssl_config);
+            std::cout << "HTTPS enabled on TCP port." << std::endl;
+        } catch (const std::exception &e) {
+            std::cerr << "Warning: TCP HTTPS failed to start: " << e.what() << std::endl;
+        }
+
+        // 2. Configure the same certificates for the UDP/QUIC listener
+        try {
+            server.GetTransport()->GetQuicTransport().GetServer().SetCertificate(
+                "certs/server.crt", "certs/server.key"
+            );
+            std::cout << "Certificates loaded for QUIC server." << std::endl;
+        } catch (const std::exception &e) {
+            std::cerr << "Warning: QUIC cert configuration failed: " << e.what() << std::endl;
+        }
+
+        // 3. Register route handlers (shared by both TCP and QUIC listeners)
+        server.Get("/hello", [](const cpphttp::HttpRequest &req) {
+            return cpphttp::HttpResponse::Plain("Hello World over TCP or QUIC!");
+        });
+
+        // 4. (Optional) Control Alt-Svc headers
+        // server.SetAdvertiseAltSvc(false); // Disable Alt-Svc header advertisement
+
+        // 5. Start the server
+        server.Start();
+        std::cout << "Hybrid server running on port " << port << std::endl;
+        std::cin.get();
+        server.Stop();
+    } catch (const std::exception &e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+    }
+}
+```
+
+### 3. HTTP Client over QUIC
+
+You can make HTTP queries over QUIC using the client template instantiated with `QuicClientTransport`:
+
+```cpp
+#include "cpphttp.hpp"
+#include <iostream>
+
+int main() {
+    try {
+        // Instantiate the client with QuicClientTransport
+        cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1", 4433);
+        client.SetTimeout(std::chrono::seconds(5));
+
+        // Send a GET request
+        cpphttp::HttpResponse response = client.Get("/hello");
+
+        std::cout << "Status: " << response.status_code << " " << response.status_message << "\n";
+        std::cout << "Body: " << response.body << "\n";
+    } catch (const std::exception &e) {
+        std::cerr << "QUIC Client Exception: " << e.what() << std::endl;
+    }
+}
+```
+
+### 4. Low-Level HTTP/3 & QPACK Helpers
+
+`cpp-http` exposes internal helpers for HTTP/3 framing and QPACK header compression:
+- **`cpphttp::qpack`:** Methods like `Encode` and `Decode` for header compression, plus Huffman encoding/decoding.
+- **`cpphttp::http3`:** Methods like `EncodeVarint` and `DecodeVarint` for QUIC variable-length integers, and `ReconstructHttp11Request` for translating QUIC streams into standard request representations.
+
 ---
 [< Previous: Basic Usage](./basic-usage.html) | [🏠 Home](./) | [Next: Performance & Tuning >](./performance-metrics.html)

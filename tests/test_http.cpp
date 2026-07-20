@@ -3629,3 +3629,206 @@ TEST(HttpIntegrationTest, CorsMiddlewareScoped) {
 
   server.Stop();
 }
+
+#ifdef CPPHTTP_ENABLE_QUIC
+TEST(HttpIntegrationTest, HttpOverQuic) {
+  cpphttp::HttpServerImpl<cpphttp::QuicServerTransport> server(0);
+
+  server.Get("/hello", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain("Hello World over QUIC");
+  });
+
+  server.Start();
+  uint16_t port = server.GetTransport()->GetServer().GetLocalPort();
+
+  cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
+                                                               port);
+  client.SetTimeout(std::chrono::seconds(5));
+
+  try {
+    auto res = client.Get("/hello");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body, "Hello World over QUIC");
+  } catch (const std::exception &e) {
+    FAIL() << "QUIC HTTP Request failed: " << e.what();
+  }
+
+  server.Stop();
+}
+
+TEST(HttpIntegrationTest, HybridServer) {
+  uint16_t port = 8250;
+  cpphttp::HybridHttpServer server(port);
+
+  server.Get("/hello", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain("Hello World");
+  });
+
+  server.Start();
+
+  // Test TCP Client
+  {
+    cpphttp::HttpClientImpl<cpphttp::TcpClientTransport> client("127.0.0.1",
+                                                                port);
+    client.SetTimeout(std::chrono::seconds(5));
+    try {
+      auto res = client.Get("/hello");
+      EXPECT_EQ(res.status_code, 200);
+      EXPECT_EQ(res.body, "Hello World");
+
+      // Verify Alt-Svc header is present and points to the correct port
+      auto alt_svc = res.GetHeader("Alt-Svc");
+      EXPECT_FALSE(alt_svc.empty());
+      EXPECT_NE(alt_svc.find("h3=\":" + std::to_string(port) + "\""),
+                std::string::npos);
+    } catch (const std::exception &e) {
+      FAIL() << "TCP HTTP Request failed: " << e.what();
+    }
+  }
+
+  // Test TCP Client with Alt-Svc disabled
+  {
+    server.SetAdvertiseAltSvc(false);
+    cpphttp::HttpClientImpl<cpphttp::TcpClientTransport> client("127.0.0.1",
+                                                                port);
+    client.SetTimeout(std::chrono::seconds(5));
+    try {
+      auto res = client.Get("/hello");
+      EXPECT_EQ(res.status_code, 200);
+      EXPECT_EQ(res.body, "Hello World");
+
+      // Verify Alt-Svc header is NOT present
+      auto alt_svc = res.GetHeader("Alt-Svc");
+      EXPECT_TRUE(alt_svc.empty());
+    } catch (const std::exception &e) {
+      FAIL() << "TCP HTTP Request failed (Alt-Svc disabled): " << e.what();
+    }
+    server.SetAdvertiseAltSvc(true);
+  }
+
+  // Test QUIC Client
+  {
+    cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
+                                                                 port);
+    client.SetTimeout(std::chrono::seconds(5));
+    try {
+      auto res = client.Get("/hello");
+      EXPECT_EQ(res.status_code, 200);
+      EXPECT_EQ(res.body, "Hello World");
+    } catch (const std::exception &e) {
+      FAIL() << "QUIC HTTP Request failed: " << e.what();
+    }
+  }
+
+  server.Stop();
+}
+
+TEST(Http3Test, HuffmanEncodingDecoding) {
+  std::string input = "hello world";
+  std::vector<uint8_t> buf;
+  cpphttp::qpack::EncodeString(buf, input);
+
+  size_t offset = 0;
+  std::string output;
+  EXPECT_TRUE(
+      cpphttp::qpack::DecodeString(buf.data(), buf.size(), offset, output));
+  EXPECT_EQ(input, output);
+}
+
+TEST(Http3Test, QPackStaticTable) {
+  const auto &table = cpphttp::qpack::GetStaticTable();
+  EXPECT_EQ(table.size(), 99);
+  EXPECT_EQ(table[0].name, ":authority");
+  EXPECT_EQ(table[1].name, ":path");
+  EXPECT_EQ(table[1].value, "/");
+  EXPECT_EQ(table[17].name, ":method");
+  EXPECT_EQ(table[17].value, "GET");
+}
+
+TEST(Http3Test, QPackRoundtrip) {
+  std::vector<std::pair<std::string, std::string>> headers = {
+      {":method", "GET"},
+      {":path", "/index.html"},
+      {":authority", "localhost"},
+      {"custom-header", "custom-value"}};
+
+  std::vector<uint8_t> encoded = cpphttp::qpack::Encode(headers);
+  std::vector<std::pair<std::string, std::string>> decoded;
+  EXPECT_TRUE(cpphttp::qpack::Decode(encoded.data(), encoded.size(), decoded));
+
+  ASSERT_EQ(headers.size(), decoded.size());
+  for (size_t i = 0; i < headers.size(); ++i) {
+    EXPECT_EQ(headers[i].first, decoded[i].first);
+    EXPECT_EQ(headers[i].second, decoded[i].second);
+  }
+}
+
+TEST(Http3Test, VarintRoundtrip) {
+  std::vector<uint64_t> test_values = {
+      0,          37,         63,
+      64,         16383,      16384,
+      1073741823, 1073741824, 1152921504606846975ULL};
+  for (uint64_t val : test_values) {
+    std::vector<uint8_t> buf;
+    cpphttp::http3::EncodeVarint(buf, val);
+
+    size_t offset = 0;
+    uint64_t decoded = 0;
+    EXPECT_TRUE(
+        cpphttp::http3::DecodeVarint(buf.data(), buf.size(), offset, decoded));
+    EXPECT_EQ(val, decoded);
+    EXPECT_EQ(buf.size(), offset);
+  }
+}
+
+TEST(Http3Test, ReconstructRequestAndParseResponse) {
+  std::vector<std::pair<std::string, std::string>> headers = {
+      {":method", "POST"},
+      {":path", "/submit"},
+      {":authority", "example.com"},
+      {"content-type", "application/json"}};
+  std::vector<uint8_t> body = {'{', '}'};
+
+  std::string req = cpphttp::http3::ReconstructHttp11Request(headers, body);
+  EXPECT_NE(req.find("POST /submit HTTP/1.1\r\n"), std::string::npos);
+  EXPECT_NE(req.find("Host: example.com\r\n"), std::string::npos);
+  EXPECT_NE(req.find("content-type: application/json\r\n"), std::string::npos);
+  EXPECT_EQ(req.substr(req.size() - 2), "{}");
+
+  std::string resp_str =
+      "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
+      "12\r\n\r\nHello World!";
+  std::vector<std::pair<std::string, std::string>> resp_headers;
+  std::vector<uint8_t> resp_body;
+  EXPECT_TRUE(
+      cpphttp::http3::ParseHttp11Response(resp_str, resp_headers, resp_body));
+
+  bool has_status = false;
+  bool has_content_type = false;
+  for (const auto &p : resp_headers) {
+    if (p.first == ":status") {
+      EXPECT_EQ(p.second, "200");
+      has_status = true;
+    }
+    if (p.first == "content-type") {
+      EXPECT_EQ(p.second, "text/plain");
+      has_content_type = true;
+    }
+  }
+  EXPECT_TRUE(has_status);
+  EXPECT_TRUE(has_content_type);
+  std::string body_str(resp_body.begin(), resp_body.end());
+  EXPECT_EQ(body_str, "Hello World!");
+}
+
+TEST(HttpIntegrationTest, ConfigureQuicTransportAlpn) {
+  cpphttp::HttpServerImpl<cpphttp::QuicServerTransport> server(0);
+  EXPECT_NO_THROW(
+      server.GetTransport()->GetServer().SetAlpnProtos({"h3", "h3-29"}));
+
+  cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
+                                                               8080);
+  EXPECT_NO_THROW(
+      client.GetTransport().GetClient().SetAlpnProtos({"h3", "h3-29"}));
+}
+#endif
