@@ -1,3 +1,4 @@
+#include <csignal>
 #include <filesystem>
 #include <iostream>
 #include <sstream>
@@ -46,12 +47,16 @@ std::string FindCertFile(const std::string &filename) {
 
 int main(int argc, char *argv[]) {
   uint16_t port = 4433;
+  std::string bind_address = "0.0.0.0";
   if (argc > 1) {
     try {
       port = static_cast<uint16_t>(std::stoi(argv[1]));
     } catch (...) {
       std::cerr << "Invalid port argument. Using default 4433." << std::endl;
     }
+  }
+  if (argc > 2) {
+    bind_address = argv[2];
   }
 
   try {
@@ -63,7 +68,7 @@ int main(int argc, char *argv[]) {
     });
 
     // Instantiate the HTTP server with hybrid TCP & QUIC transport
-    cpphttp::HybridHttpServer server(port);
+    cpphttp::HybridHttpServer server(port, bind_address);
 
     // Configure SSL/TLS certificates for HTTPS on the TCP listener
     cpptcpnet::TcpListener::SslConfig ssl_config;
@@ -153,11 +158,27 @@ int main(int argc, char *argv[]) {
     std::cout
         << "  Hybrid HTTP/QUIC Server Running on TCP (HTTPS) & UDP (QUIC) Port "
         << port << std::endl;
-    std::cout << "  Local URL: https://localhost:" << port << "/" << std::endl;
+    std::string url_host = (bind_address == "0.0.0.0" || bind_address == "::")
+                               ? "localhost"
+                               : bind_address;
+    std::cout << "  Local URL: https://" << url_host << ":" << port << "/"
+              << std::endl;
     std::cout << "  Press Enter to stop the server..." << std::endl;
     std::cout << "=================================================="
               << std::endl;
-    std::cin.get();
+    std::string line;
+    if (std::getline(std::cin, line)) {
+      // Wait for Enter key in interactive mode
+    } else {
+      // In non-interactive background mode (e.g. redirected stdin in scripts),
+      // wait until terminated by SIGINT / SIGTERM signal
+      static std::atomic<bool> keep_running{true};
+      ::signal(SIGINT, [](int) { keep_running = false; });
+      ::signal(SIGTERM, [](int) { keep_running = false; });
+      while (keep_running) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    }
     server.Stop();
   } catch (const std::exception &e) {
     std::cerr << "Failed to start server: " << e.what() << std::endl;

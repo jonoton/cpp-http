@@ -30,23 +30,13 @@
 #include "cppasyncworker.hpp"
 #include "cpptcpnet.hpp"
 #ifdef CPPHTTP_ENABLE_QUIC
-#ifdef _WIN32
-// Undefine conflicting WinCrypt macros that clash with OpenSSL names
-#undef X509_NAME
-#undef X509_EXTENSIONS
-#undef X509_CERT_TO_BE_SIGNED
-#undef PKCS7_ISSUER_AND_SERIAL
-#undef PKCS7_SIGNER_INFO
-#undef OCSP_REQUEST
-#undef OCSP_RESPONSE
-#endif
 #include "cppquic.hpp"
 #endif
 
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 7;
+constexpr int VERSION_MINOR = 8;
 constexpr int VERSION_PATCH = 0;
 
 /**
@@ -59,6 +49,41 @@ inline const std::string &version() {
            "." + std::to_string(VERSION_PATCH);
   }();
   return version_str;
+}
+
+enum class LogSeverity { Info, Warning, Error };
+
+using LogCallback =
+    std::function<void(LogSeverity severity, const std::string &className,
+                       const std::string &message)>;
+
+namespace internal {
+inline std::mutex &GetLoggerMutex() {
+  static std::mutex mtx;
+  return mtx;
+}
+
+inline LogCallback &GetLogger() {
+  static LogCallback logger = nullptr;
+  return logger;
+}
+
+inline void Log(LogSeverity severity, const std::string &className,
+                const std::string &message) {
+  LogCallback handler;
+  {
+    std::lock_guard<std::mutex> lock(GetLoggerMutex());
+    handler = GetLogger();
+  }
+  if (handler) {
+    handler(severity, className, message);
+  }
+}
+}  // namespace internal
+
+inline void SetLogger(LogCallback logger) {
+  std::lock_guard<std::mutex> lock(internal::GetLoggerMutex());
+  internal::GetLogger() = std::move(logger);
 }
 
 namespace qpack {
@@ -757,6 +782,36 @@ inline std::string ReconstructHttp11Request(
   return req;
 }
 
+inline std::string ReconstructHttp11Response(
+    const std::vector<std::pair<std::string, std::string>> &headers,
+    const std::vector<uint8_t> &body) {
+  std::string status = "200";
+  std::string status_text = "OK";
+  std::string resp;
+
+  for (const auto &p : headers) {
+    if (p.first == ":status") {
+      status = p.second;
+    }
+  }
+
+  resp += "HTTP/1.1 " + status + " " + status_text + "\r\n";
+
+  bool has_cl = false;
+  for (const auto &p : headers) {
+    if (p.first[0] == ':') continue;
+    if (p.first == "content-length") has_cl = true;
+    resp += p.first + ": " + p.second + "\r\n";
+  }
+  if (!has_cl) {
+    resp += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+  }
+
+  resp += "\r\n";
+  resp.insert(resp.end(), body.begin(), body.end());
+  return resp;
+}
+
 inline bool ParseHttp11Response(
     const std::string &data,
     std::vector<std::pair<std::string, std::string>> &headers,
@@ -852,6 +907,15 @@ class TcpServerTransport {
   }
 
   void Disconnect(uint64_t session_id) { listener_->Disconnect(session_id); }
+
+  void SetSendChunkSize(size_t size) { listener_->SetSendChunkSize(size); }
+  void SetMaxOutboundBufferSize(size_t size) {
+    listener_->SetMaxOutboundBufferSize(size);
+  }
+
+#ifdef CPPHTTP_ENABLE_QUIC
+  void SetQuicProfile(const cppquic::QuicProfile &profile) {}
+#endif
 
   cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
     return listener_->GetConnectionProfile(session_id);
@@ -1037,6 +1101,13 @@ class TcpClientTransport {
   void StartRequest(uint64_t session_id) {}
   void EndRequest(uint64_t session_id) {}
 
+  void SetSendChunkSize(size_t size) {}
+  void SetMaxOutboundBufferSize(size_t size) {}
+
+#ifdef CPPHTTP_ENABLE_QUIC
+  void SetQuicProfile(const cppquic::QuicProfile &profile) {}
+#endif
+
   cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
     std::lock_guard<std::mutex> lock(*const_cast<std::mutex *>(&mtx_));
     if (!client_) {
@@ -1128,7 +1199,21 @@ class QuicServerTransport {
       std::vector<std::pair<std::string, std::string>> headers;
       std::vector<uint8_t> body;
       if (http3::ParseHttp11Response(data, headers, body)) {
-        std::vector<uint8_t> qpack_block = qpack::Encode(headers);
+        // Strip connection-specific headers (RFC 9114, Section 4.1.2)
+        std::vector<std::pair<std::string, std::string>> clean_headers;
+        clean_headers.reserve(headers.size());
+        for (const auto &pair : headers) {
+          std::string lower_key = pair.first;
+          std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+          if (lower_key == "connection" || lower_key == "keep-alive" ||
+              lower_key == "proxy-connection" ||
+              lower_key == "transfer-encoding" || lower_key == "upgrade") {
+            continue;
+          }
+          clean_headers.push_back(pair);
+        }
+        std::vector<uint8_t> qpack_block = qpack::Encode(clean_headers);
         std::vector<uint8_t> headers_frame =
             http3::EncodeFrame(0x01, qpack_block);
         std::vector<uint8_t> data_to_send = headers_frame;
@@ -1142,7 +1227,7 @@ class QuicServerTransport {
         server_.SendOnStream(conn, stream_id, data);
       }
     } else {
-      server_.SendOnStream(conn, stream_id, data);
+      server_.SendOnStream(conn, stream_id, data, true);
     }
 
     {
@@ -1176,10 +1261,15 @@ class QuicServerTransport {
     }
   }
 
+  void SetSendChunkSize(size_t size) { send_chunk_size_ = size; }
+  void SetMaxOutboundBufferSize(size_t size) {
+    max_outbound_buffer_size_ = size;
+  }
+
   cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
     cpptcpnet::ConnectionProfile profile;
-    profile.max_outbound_buffer_size = 1024 * 1024;
-    profile.send_chunk_size = 65536;
+    profile.max_outbound_buffer_size = max_outbound_buffer_size_;
+    profile.send_chunk_size = send_chunk_size_;
     return profile;
   }
 
@@ -1263,6 +1353,17 @@ class QuicServerTransport {
   cppquic::QuicServer &GetServer() { return server_; }
   const cppquic::QuicServer &GetServer() const { return server_; }
 
+  void SetQuicProfile(const cppquic::QuicProfile &profile) {
+    server_.SetQuicProfile(profile);
+    if (profile.initial_max_data >= 32 * 1024 * 1024) {
+      send_chunk_size_ = 128 * 1024;
+    }
+  }
+
+ private:
+  size_t send_chunk_size_ = 65536;
+  size_t max_outbound_buffer_size_ = 1024 * 1024;
+
  private:
   struct SessionKey {
     cppquic::ConnectionId conn_id;
@@ -1323,32 +1424,97 @@ class QuicServerTransport {
     if (is_h3_session) {
       std::vector<uint8_t> h3_to_http11_data;
       bool h3_request_complete = false;
+      bool violated = false;
 
       {
         std::lock_guard<std::mutex> lock(mapping_mutex_);
         auto conn_id = conn->GetLocalConnectionId();
         auto &conn_state = h3_connections_[conn_id];
-        auto &stream_state = conn_state.streams[stream_id];
-        stream_state.stream_id = stream_id;
-        stream_state.recv_buf.insert(stream_state.recv_buf.end(), data.begin(),
-                                     data.end());
 
-        if ((stream_id & 0x02) != 0) {
-          if (!stream_state.is_control && !stream_state.is_qpack_enc &&
-              !stream_state.is_qpack_dec && !stream_state.recv_buf.empty()) {
-            uint8_t type = stream_state.recv_buf.front();
-            stream_state.recv_buf.erase(stream_state.recv_buf.begin());
-            if (type == 0x00) {
-              stream_state.is_control = true;
-              conn_state.client_ctrl_stream_id = stream_id;
-            } else if (type == 0x02) {
-              stream_state.is_qpack_enc = true;
-            } else if (type == 0x03) {
-              stream_state.is_qpack_dec = true;
+        if (conn_state.protocol_violated) {
+          violated = true;
+        } else {
+          auto &stream_state = conn_state.streams[stream_id];
+          stream_state.stream_id = stream_id;
+          stream_state.recv_buf.insert(stream_state.recv_buf.end(),
+                                       data.begin(), data.end());
+
+          if ((stream_id & 0x02) != 0) {
+            if (!stream_state.is_control && !stream_state.is_qpack_enc &&
+                !stream_state.is_qpack_dec && !stream_state.recv_buf.empty()) {
+              uint8_t type = stream_state.recv_buf.front();
+              stream_state.recv_buf.erase(stream_state.recv_buf.begin());
+              if (type == 0x00) {
+                if (conn_state.client_ctrl_stream_opened) {
+                  conn_state.protocol_violated = true;
+                } else {
+                  conn_state.client_ctrl_stream_opened = true;
+                  stream_state.is_control = true;
+                  conn_state.client_ctrl_stream_id = stream_id;
+                }
+              } else if (type == 0x02) {
+                if (conn_state.client_qpack_enc_opened) {
+                  conn_state.protocol_violated = true;
+                } else {
+                  conn_state.client_qpack_enc_opened = true;
+                  stream_state.is_qpack_enc = true;
+                }
+              } else if (type == 0x03) {
+                if (conn_state.client_qpack_dec_opened) {
+                  conn_state.protocol_violated = true;
+                } else {
+                  conn_state.client_qpack_dec_opened = true;
+                  stream_state.is_qpack_dec = true;
+                }
+              }
             }
-          }
 
-          if (stream_state.is_control) {
+            if (conn_state.protocol_violated) {
+              violated = true;
+            } else if (stream_state.is_control) {
+              size_t offset = 0;
+              while (offset < stream_state.recv_buf.size()) {
+                size_t frame_start = offset;
+                uint64_t type = 0, length = 0;
+                if (http3::DecodeVarint(stream_state.recv_buf.data(),
+                                        stream_state.recv_buf.size(), offset,
+                                        type) &&
+                    http3::DecodeVarint(stream_state.recv_buf.data(),
+                                        stream_state.recv_buf.size(), offset,
+                                        length)) {
+                  if (!conn_state.client_settings_received) {
+                    if (type != 0x04) {
+                      conn_state.protocol_violated = true;
+                      violated = true;
+                      break;
+                    }
+                    conn_state.client_settings_received = true;
+                  }
+                  if (type == 0x00 || type == 0x01) {
+                    conn_state.protocol_violated = true;
+                    violated = true;
+                    break;
+                  }
+                  if (offset + length <= stream_state.recv_buf.size()) {
+                    offset += length;
+                  } else {
+                    offset = frame_start;
+                    break;
+                  }
+                } else {
+                  offset = frame_start;
+                  break;
+                }
+              }
+              if (offset > 0) {
+                stream_state.recv_buf.erase(
+                    stream_state.recv_buf.begin(),
+                    stream_state.recv_buf.begin() + offset);
+              }
+            } else {
+              stream_state.recv_buf.clear();
+            }
+          } else {
             size_t offset = 0;
             while (offset < stream_state.recv_buf.size()) {
               size_t frame_start = offset;
@@ -1359,7 +1525,20 @@ class QuicServerTransport {
                   http3::DecodeVarint(stream_state.recv_buf.data(),
                                       stream_state.recv_buf.size(), offset,
                                       length)) {
+                if (type == 0x04) {
+                  conn_state.protocol_violated = true;
+                  violated = true;
+                  break;
+                }
                 if (offset + length <= stream_state.recv_buf.size()) {
+                  const uint8_t *payload =
+                      stream_state.recv_buf.data() + offset;
+                  if (type == 0x01) {
+                    qpack::Decode(payload, length, stream_state.headers);
+                  } else if (type == 0x00) {
+                    stream_state.body.insert(stream_state.body.end(), payload,
+                                             payload + length);
+                  }
                   offset += length;
                 } else {
                   offset = frame_start;
@@ -1375,50 +1554,23 @@ class QuicServerTransport {
                   stream_state.recv_buf.begin(),
                   stream_state.recv_buf.begin() + offset);
             }
-          } else {
-            stream_state.recv_buf.clear();
-          }
-        } else {
-          size_t offset = 0;
-          while (offset < stream_state.recv_buf.size()) {
-            size_t frame_start = offset;
-            uint64_t type = 0, length = 0;
-            if (http3::DecodeVarint(stream_state.recv_buf.data(),
-                                    stream_state.recv_buf.size(), offset,
-                                    type) &&
-                http3::DecodeVarint(stream_state.recv_buf.data(),
-                                    stream_state.recv_buf.size(), offset,
-                                    length)) {
-              if (offset + length <= stream_state.recv_buf.size()) {
-                const uint8_t *payload = stream_state.recv_buf.data() + offset;
-                if (type == 0x01) {
-                  qpack::Decode(payload, length, stream_state.headers);
-                } else if (type == 0x00) {
-                  stream_state.body.insert(stream_state.body.end(), payload,
-                                           payload + length);
-                }
-                offset += length;
-              } else {
-                offset = frame_start;
-                break;
-              }
-            } else {
-              offset = frame_start;
-              break;
+
+            if (fin && !conn_state.protocol_violated) {
+              std::string req_str = http3::ReconstructHttp11Request(
+                  stream_state.headers, stream_state.body);
+              h3_to_http11_data.assign(req_str.begin(), req_str.end());
+              h3_request_complete = true;
             }
           }
-          if (offset > 0) {
-            stream_state.recv_buf.erase(stream_state.recv_buf.begin(),
-                                        stream_state.recv_buf.begin() + offset);
-          }
-
-          if (fin) {
-            std::string req_str = http3::ReconstructHttp11Request(
-                stream_state.headers, stream_state.body);
-            h3_to_http11_data.assign(req_str.begin(), req_str.end());
-            h3_request_complete = true;
-          }
         }
+      }
+
+      if (violated) {
+        internal::Log(
+            LogSeverity::Warning, "QuicServer",
+            "HTTP/3 protocol violation detected. Closing connection.");
+        conn->SetState(cppquic::ConnectionState::Closed);
+        return;
       }
 
       if (h3_request_complete) {
@@ -1498,6 +1650,11 @@ class QuicServerTransport {
     bool server_ctrl_opened = false;
     uint64_t client_ctrl_stream_id = 0xFFFFFFFFFFFFFFFFULL;
     std::unordered_map<uint64_t, Http3StreamState> streams;
+    bool client_ctrl_stream_opened = false;
+    bool client_qpack_enc_opened = false;
+    bool client_qpack_dec_opened = false;
+    bool client_settings_received = false;
+    bool protocol_violated = false;
   };
   std::unordered_map<cppquic::ConnectionId, Http3ConnState,
                      cppquic::ConnectionIdHash>
@@ -1526,13 +1683,72 @@ class QuicClientTransport {
   QuicClientTransport() {
     client_.SetStreamDataHandler(
         [this](uint64_t stream_id, const std::vector<uint8_t> &data, bool fin) {
-          std::lock_guard<std::mutex> lock(mtx_);
           if (stream_id != active_stream_id_) return;
-          if (data_handler_ && !data.empty()) {
-            data_handler_(1, data);
+
+          recv_buf_.insert(recv_buf_.end(), data.begin(), data.end());
+          size_t offset = 0;
+          while (offset < recv_buf_.size()) {
+            size_t frame_start = offset;
+            uint64_t type = 0, length = 0;
+            if (http3::DecodeVarint(recv_buf_.data(), recv_buf_.size(), offset,
+                                    type) &&
+                http3::DecodeVarint(recv_buf_.data(), recv_buf_.size(), offset,
+                                    length)) {
+              if (type == 0x00 || type == 0x01) {
+                is_h3_ = true;
+                if (offset + length <= recv_buf_.size()) {
+                  const uint8_t *payload = recv_buf_.data() + offset;
+                  if (type == 0x01) {
+                    qpack::Decode(payload, length, resp_headers_);
+                    std::string status = "200";
+                    for (const auto &p : resp_headers_) {
+                      if (p.first == ":status") status = p.second;
+                    }
+                    std::string header_str = "HTTP/1.1 " + status + " OK\r\n";
+                    for (const auto &p : resp_headers_) {
+                      if (p.first[0] == ':') continue;
+                      header_str += p.first + ": " + p.second + "\r\n";
+                    }
+                    header_str += "\r\n";
+                    std::vector<uint8_t> h_vec(header_str.begin(),
+                                               header_str.end());
+                    if (data_handler_) data_handler_(1, h_vec);
+                    headers_sent_ = true;
+                  } else if (type == 0x00) {
+                    std::vector<uint8_t> d_vec(payload, payload + length);
+                    if (data_handler_) data_handler_(1, d_vec);
+                  }
+                  offset += length;
+                } else {
+                  offset = frame_start;
+                  break;
+                }
+              } else {
+                offset = frame_start;
+                break;
+              }
+            } else {
+              offset = frame_start;
+              break;
+            }
           }
+          if (offset > 0) {
+            recv_buf_.erase(recv_buf_.begin(), recv_buf_.begin() + offset);
+          }
+
+          if (!is_h3_) {
+            if (data_handler_ && !data.empty()) {
+              data_handler_(1, data);
+            }
+            recv_buf_.clear();
+          }
+
           if (fin) {
             stream_finished_ = true;
+            is_h3_ = false;
+            headers_sent_ = false;
+            resp_headers_.clear();
+            recv_buf_.clear();
             if (disconnect_handler_) {
               disconnect_handler_();
             }
@@ -1554,7 +1770,8 @@ class QuicClientTransport {
   uint64_t Connect(const std::string &host, uint16_t port,
                    std::chrono::milliseconds timeout) {
     client_.Start();
-    if (client_.Connect(host, port, timeout.count())) {
+    bool ok = client_.Connect(host, port, timeout.count());
+    if (ok) {
       return 1;
     }
     return 0;
@@ -1562,13 +1779,13 @@ class QuicClientTransport {
 
   bool Send(uint64_t session_id, const std::string &data) {
     std::lock_guard<std::mutex> lock(mtx_);
-    client_.SendOnStream(active_stream_id_, data, false);
+    client_.SendOnStream(active_stream_id_, data, true);
     return true;
   }
 
   bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
     std::lock_guard<std::mutex> lock(mtx_);
-    client_.SendOnStream(active_stream_id_, data, false);
+    client_.SendOnStream(active_stream_id_, data, true);
     return true;
   }
 
@@ -1588,6 +1805,10 @@ class QuicClientTransport {
     std::lock_guard<std::mutex> lock(mtx_);
     active_stream_id_ = client_.OpenStream(true);
     stream_finished_ = false;
+    is_h3_ = false;
+    headers_sent_ = false;
+    resp_headers_.clear();
+    recv_buf_.clear();
   }
 
   void EndRequest(uint64_t session_id) {
@@ -1595,10 +1816,15 @@ class QuicClientTransport {
     client_.SendOnStream(active_stream_id_, std::vector<uint8_t>{}, true);
   }
 
+  void SetSendChunkSize(size_t size) { send_chunk_size_ = size; }
+  void SetMaxOutboundBufferSize(size_t size) {
+    max_outbound_buffer_size_ = size;
+  }
+
   cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
     cpptcpnet::ConnectionProfile profile;
-    profile.max_outbound_buffer_size = 1024 * 1024;
-    profile.send_chunk_size = 65536;
+    profile.max_outbound_buffer_size = max_outbound_buffer_size_;
+    profile.send_chunk_size = send_chunk_size_;
     return profile;
   }
 
@@ -1610,13 +1836,26 @@ class QuicClientTransport {
   cppquic::QuicClient &GetClient() { return client_; }
   const cppquic::QuicClient &GetClient() const { return client_; }
 
+  void SetQuicProfile(const cppquic::QuicProfile &profile) {
+    client_.SetQuicProfile(profile);
+    if (profile.initial_max_data >= 32 * 1024 * 1024) {
+      send_chunk_size_ = 128 * 1024;
+    }
+  }
+
  private:
   cppquic::QuicClient client_;
+  size_t send_chunk_size_ = 65536;
+  size_t max_outbound_buffer_size_ = 1024 * 1024;
   uint64_t active_stream_id_ = 0;
   bool stream_finished_ = false;
+  bool is_h3_ = false;
+  bool headers_sent_ = false;
   std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
       data_handler_;
   std::function<void()> disconnect_handler_;
+  std::vector<uint8_t> recv_buf_;
+  std::vector<std::pair<std::string, std::string>> resp_headers_;
   std::mutex mtx_;
 };
 
@@ -1632,6 +1871,16 @@ class HybridServerTransport {
     size_t bytes_transferred;
   };
 
+  struct SessionKey {
+    bool is_quic;
+    uint64_t transport_session_id;
+
+    bool operator<(const SessionKey &o) const {
+      if (is_quic != o.is_quic) return is_quic < o.is_quic;
+      return transport_session_id < o.transport_session_id;
+    }
+  };
+
   HybridServerTransport(uint16_t port,
                         const std::string &bind_address = "0.0.0.0")
       : tcp_transport_(port, bind_address),
@@ -1645,104 +1894,117 @@ class HybridServerTransport {
   void Stop() {
     tcp_transport_.Stop();
     quic_transport_.Stop();
-    std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
-    tcp_sessions_.clear();
+    std::lock_guard<std::mutex> lock(session_map_mutex_);
+    unified_to_transport_.clear();
+    transport_to_unified_.clear();
   }
 
   uint16_t GetLocalPort() const { return tcp_transport_.GetLocalPort(); }
 
-  static bool IsQuicSessionId(uint64_t session_id) {
-    return (session_id & (1ULL << 63)) != 0;
-  }
-
-  static uint64_t ToQuicSessionId(uint64_t original_id) {
-    return original_id | (1ULL << 63);
-  }
-
-  static uint64_t FromQuicSessionId(uint64_t session_id) {
-    return session_id & ~(1ULL << 63);
-  }
-
   bool SupportsQuic() const { return true; }
+
   bool IsQuicSession(uint64_t session_id) const {
-    std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
-    return tcp_sessions_.find(session_id) == tcp_sessions_.end();
+    std::lock_guard<std::mutex> lock(session_map_mutex_);
+    auto it = unified_to_transport_.find(session_id);
+    if (it != unified_to_transport_.end()) {
+      return it->second.is_quic;
+    }
+    return false;
   }
 
   bool Send(uint64_t session_id, const std::string &data) {
-    if (IsQuicSession(session_id)) {
-      return quic_transport_.Send(FromQuicSessionId(session_id), data);
-    } else {
-      return tcp_transport_.Send(session_id, data);
+    if (auto opt = GetTransportSession(session_id)) {
+      if (opt->is_quic) {
+        return quic_transport_.Send(opt->transport_session_id, data);
+      } else {
+        return tcp_transport_.Send(opt->transport_session_id, data);
+      }
     }
+    return false;
   }
 
   bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
-    if (IsQuicSession(session_id)) {
-      return quic_transport_.Send(FromQuicSessionId(session_id), data);
-    } else {
-      return tcp_transport_.Send(session_id, data);
+    if (auto opt = GetTransportSession(session_id)) {
+      if (opt->is_quic) {
+        return quic_transport_.Send(opt->transport_session_id, data);
+      } else {
+        return tcp_transport_.Send(opt->transport_session_id, data);
+      }
     }
+    return false;
   }
 
   void Disconnect(uint64_t session_id) {
-    if (IsQuicSession(session_id)) {
-      quic_transport_.Disconnect(FromQuicSessionId(session_id));
-    } else {
-      tcp_transport_.Disconnect(session_id);
+    if (auto opt = GetTransportSession(session_id)) {
+      if (opt->is_quic) {
+        quic_transport_.Disconnect(opt->transport_session_id);
+      } else {
+        tcp_transport_.Disconnect(opt->transport_session_id);
+      }
     }
   }
 
   cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
-    if (IsQuicSession(session_id)) {
-      return quic_transport_.GetConnectionProfile(
-          FromQuicSessionId(session_id));
-    } else {
-      return tcp_transport_.GetConnectionProfile(session_id);
+    if (auto opt = GetTransportSession(session_id)) {
+      if (opt->is_quic) {
+        return quic_transport_.GetConnectionProfile(opt->transport_session_id);
+      } else {
+        return tcp_transport_.GetConnectionProfile(opt->transport_session_id);
+      }
     }
+    return {};
   }
 
   void ApplyConnectionProfile(uint64_t session_id,
                               const cpptcpnet::ConnectionProfile &profile) {
-    if (IsQuicSession(session_id)) {
-      quic_transport_.ApplyConnectionProfile(FromQuicSessionId(session_id),
-                                             profile);
-    } else {
-      tcp_transport_.ApplyConnectionProfile(session_id, profile);
+    if (auto opt = GetTransportSession(session_id)) {
+      if (opt->is_quic) {
+        quic_transport_.ApplyConnectionProfile(opt->transport_session_id,
+                                               profile);
+      } else {
+        tcp_transport_.ApplyConnectionProfile(opt->transport_session_id,
+                                              profile);
+      }
     }
   }
 
   cpptcpnet::PeerAddress GetPeerAddress(uint64_t session_id) const {
-    if (IsQuicSession(session_id)) {
-      return quic_transport_.GetPeerAddress(FromQuicSessionId(session_id));
-    } else {
-      return tcp_transport_.GetPeerAddress(session_id);
+    if (auto opt = GetTransportSession(session_id)) {
+      if (opt->is_quic) {
+        return quic_transport_.GetPeerAddress(opt->transport_session_id);
+      } else {
+        return tcp_transport_.GetPeerAddress(opt->transport_session_id);
+      }
     }
+    return {};
   }
 
   std::optional<TransferEvent> TryReceiveTransferEvent() {
     if (auto ev = tcp_transport_.TryReceiveTransferEvent()) {
-      return TransferEvent{ev->session_id, ev->is_send, ev->bytes_transferred};
+      uint64_t unified_id = GetOrCreateUnifiedSessionId(false, ev->session_id);
+      return TransferEvent{unified_id, ev->is_send, ev->bytes_transferred};
     }
     if (auto ev = quic_transport_.TryReceiveTransferEvent()) {
-      return TransferEvent{ToQuicSessionId(ev->session_id), ev->is_send,
-                           ev->bytes_transferred};
+      uint64_t unified_id = GetOrCreateUnifiedSessionId(true, ev->session_id);
+      return TransferEvent{unified_id, ev->is_send, ev->bytes_transferred};
     }
     return std::nullopt;
   }
 
   std::optional<ConnectionEvent> TryReceiveConnectionEvent() {
     if (auto ev = tcp_transport_.TryReceiveConnectionEvent()) {
-      std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
-      if (ev->state == cpptcpnet::ConnectionState::Connected) {
-        tcp_sessions_.insert(ev->session_id);
-      } else if (ev->state == cpptcpnet::ConnectionState::Disconnected) {
-        tcp_sessions_.erase(ev->session_id);
+      uint64_t unified_id = GetOrCreateUnifiedSessionId(false, ev->session_id);
+      if (ev->state == cpptcpnet::ConnectionState::Disconnected) {
+        RemoveSessionMapping(unified_id);
       }
-      return ConnectionEvent{ev->session_id, ev->state};
+      return ConnectionEvent{unified_id, ev->state};
     }
     if (auto ev = quic_transport_.TryReceiveConnectionEvent()) {
-      return ConnectionEvent{ToQuicSessionId(ev->session_id), ev->state};
+      uint64_t unified_id = GetOrCreateUnifiedSessionId(true, ev->session_id);
+      if (ev->state == cpptcpnet::ConnectionState::Disconnected) {
+        RemoveSessionMapping(unified_id);
+      }
+      return ConnectionEvent{unified_id, ev->state};
     }
     return std::nullopt;
   }
@@ -1753,18 +2015,16 @@ class HybridServerTransport {
     data_handler_ = std::move(handler);
     tcp_transport_.SetDataHandler(
         [this](uint64_t session_id, const std::vector<uint8_t> &data) {
-          {
-            std::lock_guard<std::mutex> lock(tcp_sessions_mutex_);
-            tcp_sessions_.insert(session_id);
-          }
+          uint64_t unified_id = GetOrCreateUnifiedSessionId(false, session_id);
           if (data_handler_) {
-            data_handler_(session_id, data);
+            data_handler_(unified_id, data);
           }
         });
     quic_transport_.SetDataHandler(
         [this](uint64_t session_id, const std::vector<uint8_t> &data) {
+          uint64_t unified_id = GetOrCreateUnifiedSessionId(true, session_id);
           if (data_handler_) {
-            data_handler_(ToQuicSessionId(session_id), data);
+            data_handler_(unified_id, data);
           }
         });
   }
@@ -1774,16 +2034,70 @@ class HybridServerTransport {
     return quic_transport_.GetServer();
   }
 
+  void SetSendChunkSize(size_t size) {
+    tcp_transport_.SetSendChunkSize(size);
+    quic_transport_.SetSendChunkSize(size);
+  }
+
+  void SetMaxOutboundBufferSize(size_t size) {
+    tcp_transport_.SetMaxOutboundBufferSize(size);
+    quic_transport_.SetMaxOutboundBufferSize(size);
+  }
+
+  void SetQuicProfile(const cppquic::QuicProfile &profile) {
+    quic_transport_.SetQuicProfile(profile);
+  }
+
   TcpServerTransport &GetTcpTransport() { return tcp_transport_; }
+  const TcpServerTransport &GetTcpTransport() const { return tcp_transport_; }
+
   QuicServerTransport &GetQuicTransport() { return quic_transport_; }
+  const QuicServerTransport &GetQuicTransport() const {
+    return quic_transport_;
+  }
 
  private:
+  uint64_t GetOrCreateUnifiedSessionId(bool is_quic,
+                                       uint64_t transport_session_id) {
+    std::lock_guard<std::mutex> lock(session_map_mutex_);
+    SessionKey key{is_quic, transport_session_id};
+    auto it = transport_to_unified_.find(key);
+    if (it != transport_to_unified_.end()) {
+      return it->second;
+    }
+    static std::atomic<uint64_t> counter{1};
+    uint64_t unified_id = counter.fetch_add(1, std::memory_order_relaxed);
+    transport_to_unified_[key] = unified_id;
+    unified_to_transport_[unified_id] = key;
+    return unified_id;
+  }
+
+  std::optional<SessionKey> GetTransportSession(
+      uint64_t unified_session_id) const {
+    std::lock_guard<std::mutex> lock(session_map_mutex_);
+    auto it = unified_to_transport_.find(unified_session_id);
+    if (it != unified_to_transport_.end()) {
+      return it->second;
+    }
+    return std::nullopt;
+  }
+
+  void RemoveSessionMapping(uint64_t unified_session_id) {
+    std::lock_guard<std::mutex> lock(session_map_mutex_);
+    auto it = unified_to_transport_.find(unified_session_id);
+    if (it != unified_to_transport_.end()) {
+      transport_to_unified_.erase(it->second);
+      unified_to_transport_.erase(it);
+    }
+  }
+
   TcpServerTransport tcp_transport_;
   QuicServerTransport quic_transport_;
   std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
       data_handler_;
-  mutable std::mutex tcp_sessions_mutex_;
-  std::unordered_set<uint64_t> tcp_sessions_;
+  mutable std::mutex session_map_mutex_;
+  std::unordered_map<uint64_t, SessionKey> unified_to_transport_;
+  std::map<SessionKey, uint64_t> transport_to_unified_;
 };
 #endif
 
@@ -2820,18 +3134,22 @@ inline bool ParseWsFrameImpl(Container &buffer, WsFrame &frame,
 
   uint64_t payload_len = byte1 & 0x7F;
   size_t header_len = 2;
-
+  size_t min_header_len = 2 + (frame.masked ? 4 : 0);
   if (payload_len == 126) {
-    if (buffer.size() < 4) return false;
-    payload_len = (static_cast<uint64_t>(buffer[2]) << 8) | buffer[3];
+    if (buffer.size() < min_header_len + 2) return false;
+    payload_len =
+        (static_cast<uint64_t>(static_cast<uint8_t>(buffer[2])) << 8) |
+        static_cast<uint8_t>(buffer[3]);
     header_len = 4;
   } else if (payload_len == 127) {
-    if (buffer.size() < 10) return false;
+    if (buffer.size() < min_header_len + 8) return false;
     payload_len = 0;
     for (int i = 0; i < 8; ++i) {
-      payload_len = (payload_len << 8) | buffer[2 + i];
+      payload_len = (payload_len << 8) | static_cast<uint8_t>(buffer[2 + i]);
     }
     header_len = 10;
+  } else {
+    if (buffer.size() < min_header_len) return false;
   }
 
   if (payload_len > max_payload_size) {
@@ -3954,6 +4272,26 @@ class HttpServerImpl {
   void SetMaxBodySize(size_t size) { max_body_size_ = size; }
   size_t GetMaxBodySize() const { return max_body_size_; }
 
+  void SetSendChunkSize(size_t size) {
+    if (transport_) {
+      transport_->SetSendChunkSize(size);
+    }
+  }
+
+  void SetMaxOutboundBufferSize(size_t size) {
+    if (transport_) {
+      transport_->SetMaxOutboundBufferSize(size);
+    }
+  }
+
+#ifdef CPPHTTP_ENABLE_QUIC
+  void SetQuicProfile(const cppquic::QuicProfile &profile) {
+    if (transport_) {
+      transport_->SetQuicProfile(profile);
+    }
+  }
+#endif
+
   void SetIdleTimeout(std::chrono::milliseconds timeout) {
     idle_timeout_ = timeout;
   }
@@ -4330,40 +4668,33 @@ class HttpServerImpl {
     std::lock_guard<std::mutex> session_lock(session->mutex);
 
     auto &buffer = session->buffer;
+    buffer.insert(buffer.end(), data.begin(), data.end());
 
-    // Optimization: start searching for '\r\n\r\n' only from the end of the
-    // previous buffer minus 3 bytes. This is safe because if a CRLFCRLF
-    // terminator spans the boundary between the old buffer and the newly
-    // appended data, it must start at least at buffer.size() - 3. If it started
-    // earlier, it would have been fully contained in the old buffer, which
-    // already failed to find a terminator.
     size_t search_start = 0;
     const std::string terminator = "\r\n\r\n";
-    auto it = std::search(buffer.begin(), buffer.end(), terminator.begin(),
-                          terminator.end());
-    if (it == buffer.end()) {
-      if (buffer.size() + data.size() > max_header_size_) {
-        HttpResponse response;
-        response.status_code = 431;
-        response.status_message = "Request Header Fields Too Large";
-        response.headers["Content-Type"] = "text/plain";
-        response.headers["Connection"] = "close";
-        response.body = "431 Request Header Fields Too Large";
-        std::string response_data = response.Serialize();
-        {
-          std::lock_guard<std::mutex> close_lock(close_mutex_);
-          sessions_to_close_.insert(session_id);
-          pending_send_bytes_[session_id] = response_data.size();
+
+    if (!session->is_websocket) {
+      auto it = std::search(buffer.begin(), buffer.end(), terminator.begin(),
+                            terminator.end());
+      if (it == buffer.end()) {
+        if (buffer.size() > max_header_size_) {
+          HttpResponse response;
+          response.status_code = 431;
+          response.status_message = "Request Header Fields Too Large";
+          response.headers["Content-Type"] = "text/plain";
+          response.headers["Connection"] = "close";
+          response.body = "431 Request Header Fields Too Large";
+          std::string response_data = response.Serialize();
+          {
+            std::lock_guard<std::mutex> close_lock(close_mutex_);
+            sessions_to_close_.insert(session_id);
+            pending_send_bytes_[session_id] = response_data.size();
+          }
+          transport_->Send(session_id, response_data);
+          return;
         }
-        transport_->Send(session_id, response_data);
-        return;
-      }
-      if (buffer.size() > 3) {
-        search_start = buffer.size() - 3;
       }
     }
-
-    buffer.insert(buffer.end(), data.begin(), data.end());
 
     while (true) {
       if (session->is_websocket) {
@@ -4488,6 +4819,23 @@ class HttpServerImpl {
 
       size_t header_end_idx = std::distance(buffer.begin(), it_term);
       size_t body_start_idx = header_end_idx + 4;
+
+      if (header_end_idx > max_header_size_) {
+        HttpResponse response;
+        response.status_code = 431;
+        response.status_message = "Request Header Fields Too Large";
+        response.headers["Content-Type"] = "text/plain";
+        response.headers["Connection"] = "close";
+        response.body = "431 Request Header Fields Too Large";
+        std::string response_data = response.Serialize();
+        {
+          std::lock_guard<std::mutex> close_lock(close_mutex_);
+          sessions_to_close_.insert(session_id);
+          pending_send_bytes_[session_id] = response_data.size();
+        }
+        transport_->Send(session_id, response_data);
+        return;
+      }
 
       std::string raw_header(buffer.begin(), buffer.begin() + header_end_idx);
 
@@ -5456,6 +5804,17 @@ class HttpClientImpl {
   Transport &GetTransport() { return client_; }
   const Transport &GetTransport() const { return client_; }
 
+  void SetSendChunkSize(size_t size) { client_.SetSendChunkSize(size); }
+  void SetMaxOutboundBufferSize(size_t size) {
+    client_.SetMaxOutboundBufferSize(size);
+  }
+
+#ifdef CPPHTTP_ENABLE_QUIC
+  void SetQuicProfile(const cppquic::QuicProfile &profile) {
+    client_.SetQuicProfile(profile);
+  }
+#endif
+
  private:
   struct ParsedResponseHeader {
     std::string status_code_str;
@@ -5518,11 +5877,15 @@ class HttpClientImpl {
     client_.SetDataHandler([this](uint64_t session_id,
                                   const std::vector<uint8_t> &data) {
       std::lock_guard<std::mutex> lock(mtx_);
-      if (session_id != session_id_ || session_id == 0) {
+      if (session_id == 0 ||
+          (session_id_ != 0 && session_id != session_id_ && session_id != 1)) {
         return;
       }
 
       if (buffer_.size() + data.size() > max_header_size_ + max_body_size_) {
+        internal::Log(
+            LogSeverity::Error, "HttpClient",
+            "[CLIENT RECV FAIL] Response size exceeded configured limits");
         disconnected_ = true;
         cv_.notify_all();
         return;
@@ -5533,6 +5896,9 @@ class HttpClientImpl {
                             terminator.end());
       if (it == buffer_.end() &&
           (buffer_.size() + data.size() > max_header_size_)) {
+        internal::Log(
+            LogSeverity::Error, "HttpClient",
+            "[CLIENT HEADER RECV FAIL] Header size exceeded configured limits");
         disconnected_ = true;
         cv_.notify_all();
         return;
@@ -6268,6 +6634,11 @@ class WebSocketClient {
   void SetMaxBodySize(size_t size) { max_body_size_ = size; }
   size_t GetMaxBodySize() const { return max_body_size_; }
 
+  void SetMaxOutboundBufferSize(size_t size) {
+    max_outbound_buffer_size_ = size;
+  }
+  size_t GetMaxOutboundBufferSize() const { return max_outbound_buffer_size_; }
+
   void SetCloseTimeout(std::chrono::milliseconds timeout) {
     close_timeout_ = timeout;
   }
@@ -6278,14 +6649,22 @@ class WebSocketClient {
     std::string protocol, host, path;
     uint16_t port;
     if (!parse_url(url, protocol, host, port, path)) {
+      internal::Log(LogSeverity::Error, "WebSocketClient",
+                    "Connect failed: URL parsing failed");
       return false;
     }
 
     ssl_enabled_ = (protocol == "https" || protocol == "wss");
 
     client_ = std::make_unique<cpptcpnet::TcpClient>();
+    client_->SetNoDelay(true);
+    if (max_outbound_buffer_size_ > 0) {
+      client_->SetMaxOutboundBufferSize(max_outbound_buffer_size_);
+    }
     if (ssl_enabled_) {
-      client_->EnableSSL();
+      cpptcpnet::TcpClient::SslClientConfig ssl_cfg;
+      ssl_cfg.verify_peer = false;
+      client_->EnableSSL(ssl_cfg);
     }
 
     buffer_.clear();
@@ -6300,9 +6679,10 @@ class WebSocketClient {
             std::lock_guard<std::mutex> lock(mtx_);
             buffer_.insert(buffer_.end(), data.begin(), data.end());
             cv_.notify_all();
-            if (handshake_completed_) {
-              run_process_frames = true;
+            if (!handshake_completed_) {
+              return;
             }
+            run_process_frames = true;
           }
           if (run_process_frames) {
             ProcessFrames();
@@ -6330,6 +6710,8 @@ class WebSocketClient {
 
     session_id_ = client_->Connect(host, port);
     if (session_id_ == 0) {
+      internal::Log(LogSeverity::Error, "WebSocketClient",
+                    "Connect failed: TcpClient::Connect returned 0");
       Disconnect();
       return false;
     }
@@ -6337,11 +6719,21 @@ class WebSocketClient {
     std::unique_lock<std::mutex> lock(mtx_);
     if (!cv_.wait_for(lock, timeout,
                       [this] { return connected_ || disconnected_; })) {
+      internal::Log(
+          LogSeverity::Error, "WebSocketClient",
+          "Connect failed: Timeout waiting for TCP connection (connected_=" +
+              std::to_string(connected_) +
+              ", disconnected_=" + std::to_string(disconnected_) + ")");
       lock.unlock();
       Disconnect();
       return false;
     }
     if (disconnected_ || !connected_) {
+      internal::Log(
+          LogSeverity::Error, "WebSocketClient",
+          "Connect failed: TCP disconnected or not connected (connected_=" +
+              std::to_string(connected_) +
+              ", disconnected_=" + std::to_string(disconnected_) + ")");
       lock.unlock();
       Disconnect();
       return false;
@@ -6375,6 +6767,8 @@ class WebSocketClient {
     handshake_req << "Sec-WebSocket-Version: 13\r\n\r\n";
 
     if (!client_->Send(session_id_, handshake_req.str())) {
+      internal::Log(LogSeverity::Error, "WebSocketClient",
+                    "Connect failed: Failed to send handshake request");
       lock.unlock();
       Disconnect();
       return false;
@@ -6388,6 +6782,10 @@ class WebSocketClient {
     };
 
     if (!cv_.wait_for(lock, timeout, check_handshake)) {
+      internal::Log(LogSeverity::Error, "WebSocketClient",
+                    "Connect failed: Timeout waiting for handshake response. "
+                    "Buffer size: " +
+                        std::to_string(buffer_.size()));
       lock.unlock();
       Disconnect();
       return false;
@@ -6402,6 +6800,9 @@ class WebSocketClient {
     buffer_.erase(buffer_.begin(), buffer_.begin() + terminator_idx + 4);
 
     if (handshake_res.find("101 Switching Protocols") == std::string::npos) {
+      internal::Log(
+          LogSeverity::Error, "WebSocketClient",
+          "Connect failed: Response did not contain 101 Switching Protocols");
       lock.unlock();
       Disconnect();
       return false;
@@ -6434,6 +6835,9 @@ class WebSocketClient {
     auto accept_it = response_headers.find("Sec-WebSocket-Accept");
     if (accept_it == response_headers.end() ||
         accept_it->second != expected_accept) {
+      internal::Log(
+          LogSeverity::Error, "WebSocketClient",
+          "Connect failed: Sec-WebSocket-Accept header missing or mismatched");
       lock.unlock();
       Disconnect();
       return false;
@@ -6503,7 +6907,14 @@ class WebSocketClient {
 
     SendFrame(0x08, payload);
 
-    if (status_code == 1000) {
+    bool should_wait = false;
+    {
+      std::lock_guard<std::mutex> lock(mtx_);
+      if (status_code == 1000 && !processing_frames_) {
+        should_wait = true;
+      }
+    }
+    if (should_wait) {
       std::unique_lock<std::mutex> lock(mtx_);
       cv_.wait_for(lock, close_timeout_, [this]() { return !connected_; });
     }
@@ -6676,10 +7087,16 @@ class WebSocketClient {
           }
 
           if (is_protocol_error) {
+            if (on_close_) {
+              on_close_(1002, "Protocol error");
+            }
             Close(1002, "Protocol error");
             return;
           }
           if (is_too_big) {
+            if (on_close_) {
+              on_close_(1009, "Message too big");
+            }
             Close(1009, "Message too big");
             return;
           }
@@ -6718,6 +7135,7 @@ class WebSocketClient {
   std::condition_variable cv_;
   bool ssl_enabled_ = false;
   size_t max_body_size_ = 10 * 1024 * 1024;
+  size_t max_outbound_buffer_size_ = 10 * 1024 * 1024;
   std::chrono::milliseconds close_timeout_{1000};
 
   bool ws_fragmented_ = false;

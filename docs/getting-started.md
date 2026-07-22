@@ -33,7 +33,7 @@ By linking `cpphttp::cpphttp`, CMake will automatically set up the header includ
 
 #### QUIC Support Configuration
 
-By default, QUIC (HTTP/3-like) features are enabled (`CPPHTTP_ENABLE_QUIC=ON`). CMake will automatically fetch the dependency `cpp-quic`. 
+By default, QUIC (HTTP/3) features are enabled (`CPPHTTP_ENABLE_QUIC=ON`). CMake will automatically fetch the dependency `cpp-quic`. 
 
 If you do not want to use QUIC and want to avoid downloading its dependencies, you can explicitly disable it before loading the package:
 

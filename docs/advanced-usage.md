@@ -701,5 +701,37 @@ int main() {
 - **`cpphttp::qpack`:** Methods like `Encode` and `Decode` for header compression, plus Huffman encoding/decoding.
 - **`cpphttp::http3`:** Methods like `EncodeVarint` and `DecodeVarint` for QUIC variable-length integers, and `ReconstructHttp11Request` for translating QUIC streams into standard request representations.
 
+## Internal Library Logging
+
+`cpp-http` provides a global logging API to capture internal diagnostics, warnings, and connection errors from `HttpClient` and `WebSocketClient`. By default, these logs are silent. You can register a custom logger callback to print or save these diagnostics.
+
+### Custom Logger Callback Registration
+
+Set a custom logger using `cpphttp::SetLogger()`:
+
+```cpp
+#include "cpphttp.hpp"
+#include <iostream>
+
+int main() {
+    // 1. Register a custom log handler callback
+    cpphttp::SetLogger([](cpphttp::LogSeverity severity, const std::string &className, const std::string &message) {
+        std::string level = "INFO";
+        if (severity == cpphttp::LogSeverity::Warning) level = "WARNING";
+        if (severity == cpphttp::LogSeverity::Error) level = "ERROR";
+
+        std::cout << "[HTTP-LIB][" << level << "][" << className << "] " << message << std::endl;
+    });
+
+    // 2. To disable internal logging at any time, pass nullptr
+    cpphttp::SetLogger(nullptr);
+}
+```
+
+The severity of internal messages is represented by `cpphttp::LogSeverity`:
+- `cpphttp::LogSeverity::Info`
+- `cpphttp::LogSeverity::Warning`
+- `cpphttp::LogSeverity::Error`
+
 ---
 [< Previous: Basic Usage](./basic-usage.html) | [🏠 Home](./) | [Next: Performance & Tuning >](./performance-metrics.html)

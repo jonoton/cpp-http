@@ -158,6 +158,10 @@ if(CPPHTTP_BUILD_EXAMPLES)
         
         add_executable(quic_http_client examples/quic_http_client.cpp)
         target_link_libraries(quic_http_client PRIVATE cpphttp::cpphttp)
+        
+        add_executable(protocol_throughput_benchmark examples/protocol_throughput_benchmark.cpp)
+        target_link_libraries(protocol_throughput_benchmark PRIVATE cpphttp::cpphttp)
+        target_compile_definitions(protocol_throughput_benchmark PRIVATE "CPPHTTP_CERTS_DIR=\"${SAFE_PROJECT_SOURCE_DIR}/certs\"")
     endif()
 endif()
 
