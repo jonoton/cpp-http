@@ -11,6 +11,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     zlib1g-dev \
     clangd \
     tcpdump \
+    chromium \
     && apt-get clean -y && rm -rf /var/lib/apt/lists/*
 
 # Install Jekyll and Bundler

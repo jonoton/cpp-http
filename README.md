@@ -1,6 +1,6 @@
 # cpp-http
 
-`cpp-http` is a lightweight, high-performance, **header-only C++17 HTTP/1.1** server and client library. Built on top of the asynchronous, non-blocking network engine `cpp-tcpnet`, it utilizes a multi-threaded worker pool with **session-affinity ordering** to handle connections concurrently without blocking your main application logic.
+`cpp-http` is a lightweight, high-performance, **header-only C++17 HTTP/1.1 and HTTP/3** server and client library. Built on top of the asynchronous, non-blocking network engines `cpp-tcpnet` and `cpp-quic`, it utilizes a multi-threaded worker pool with **session-affinity ordering** to handle connections concurrently without blocking your main application logic.
 
 ---
 
@@ -22,7 +22,7 @@
 - **Reliability & DoS Protection:** Exception-safe parsing, configurable max header block limits, and strict payload/body size limitations.
 - **WebSocket Support:** Fully integrated server-side WebSocket routing and client-side `WebSocketClient` with fragmentation, continuation, and ping/pong keep-alives.
 - **SSL/TLS Support:** Out-of-the-box HTTPS, WSS, and client-side SSL support through OpenSSL.
-- **HTTP-over-QUIC & Hybrid Server/Client:** Seamless support for HTTP over QUIC via the `cpp-quic` library. Includes UDP/QUIC-based servers (`QuicHttpServer`), client-side QUIC transport (`HttpClientImpl<QuicClientTransport>`), and hybrid server configurations (`HybridHttpServer`) that bind to both TCP (HTTPS) and UDP (QUIC) on the same port, automatically advertising QUIC services using `Alt-Svc` headers.
+- **HTTP/3 (HTTP-over-QUIC) & Hybrid Server/Client:** Seamless support for HTTP/3 via `cpp-quic`. Includes UDP/QUIC-based servers (`QuicHttpServer`), client-side QUIC transport (`HttpClientImpl<QuicClientTransport>`), and hybrid server configurations (`HybridHttpServer`) that bind to both TCP (HTTPS) and UDP (QUIC) on the same port, automatically advertising QUIC services using `Alt-Svc` headers. Verified for full compatibility with `curl-http3` and Google Chrome/Chromium.
 
 ---
 
@@ -179,9 +179,17 @@ set(CPPHTTP_ENABLE_QUIC OFF CACHE BOOL "" FORCE)
 
 ---
 
+## Testing HTTP/3 (QUIC) Compatibility
+
+The library features integration tests validating full compatibility with standard HTTP/3 and QUIC clients:
+- **curl-http3**: Run `tests/test_quic_curl.sh` to verify request/response flows against the curl HTTP/3 client.
+- **Headless Chrome/Chromium**: Run `tests/test_quic_chrome.sh` to execute the automated browser-based HTTP/3 verification suite, which dynamically manages self-signed fingerprints and validates page retrieval and connection telemetry.
+
+---
+
 ## Directory Overview
 
 - [cpphttp.hpp](file:///workspaces/cpp-http/cpphttp.hpp): The complete single-header HTTP server and client library.
-- [tests/](file:///workspaces/cpp-http/tests): Testing suite using Google Test.
+- [tests/](file:///workspaces/cpp-http/tests): Testing suite using Google Test and headless browser integration scripts.
 - [examples/](file:///workspaces/cpp-http/examples): Ready-to-run HTTP/HTTPS/WebSocket and HTTP-over-QUIC server/client demonstrations.
 - [docs/](file:///workspaces/cpp-http/docs): Fully comprehensive markdown documentation.

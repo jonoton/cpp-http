@@ -4,10 +4,10 @@ layout: default
 
 # cpp-http
 
-`cpp-http` is a lightweight, high-performance, header-only C++17 HTTP/1.1 server and client library. It is built on top of `cpp-tcpnet`, leveraging its asynchronous, non-blocking TCP engine and a multi-threaded worker pool with **session-affinity ordering** to parse and route HTTP requests concurrently without stalling the main application thread.
+`cpp-http` is a lightweight, high-performance, header-only C++17 HTTP/1.1 and HTTP/3 server and client library. It is built on top of `cpp-tcpnet` and `cpp-quic`, leveraging their asynchronous, non-blocking network engines and a multi-threaded worker pool with **session-affinity ordering** to parse and route HTTP requests concurrently without stalling the main application thread.
 
 ### Key Features
-- **Built on cpp-tcpnet:** Leverages the robust multi-threaded networking foundation of `cpp-tcpnet` with session-affinity worker threads for guaranteed per-connection ordering.
+- **Built on cpp-tcpnet & cpp-quic:** Leverages robust multi-threaded networking foundations with session-affinity worker threads for guaranteed per-connection ordering.
 - **Header-Only:** Drop-in C++17 library. Zero compilation required to integrate.
 - **Asynchronous Event Loop:** Handles high numbers of concurrent client connections in the background with parallel throughput across connections.
 - **HTTP Streaming:** Server-side `AddStreamRoute` for incremental chunked-upload processing; client-side `GetStream`, `PostStream`, `PostStreamAsync`, and `PutStreamAsync` for streaming large payloads without buffering in memory.
@@ -25,8 +25,8 @@ layout: default
 - **Ergonomic Response Builders:** Quickly construct structured responses (`Json`, `Html`, `Plain`, `Redirect`) with status code resolution.
 - **Connection Lifecycle Management:** Explicitly handles `Connection: close` headers for clean socket cleanups.
 - **Defragmentation & DoS Limits:** Configurable max request header boundaries to prevent memory exhaust exploits.
-- **Thread-Pooled Routing:** Workloads are parsed and dispatched concurrently via `cpp-tcpnet` session-affinity worker threads.
-- **HTTP-over-QUIC & Hybrid Transport:** Leverage UDP/QUIC server (`QuicHttpServer`) and client transports, or bind standard TCP (HTTPS) and UDP (QUIC) to a single port using `HybridHttpServer` with automatic client advertisement via `Alt-Svc` headers.
+- **Thread-Pooled Routing:** Workloads are parsed and dispatched concurrently via session-affinity worker threads.
+- **HTTP/3 & Hybrid Transport:** Fully supports HTTP/3 (HTTP-over-QUIC) via `QuicHttpServer` and `QuicClientTransport`. Also supports hybrid server configurations (`HybridHttpServer`) that bind TCP (HTTPS) and UDP (QUIC) to a single port with automatic client advertisement via `Alt-Svc` headers, verified for full compatibility with curl-http3 and Google Chrome/Chromium.
 
 ## Documentation Pages
 

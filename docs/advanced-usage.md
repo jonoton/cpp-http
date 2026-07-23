@@ -593,9 +593,9 @@ The client-side `WebSocketClient` exposes:
 * `void Close(uint16_t status_code, const std::string &reason)`: Closes the connection cleanly.
 * `void Disconnect()`: Immediately terminates connection.
 
-## HTTP-over-QUIC & Hybrid Transports
+## HTTP/3 (HTTP-over-QUIC) & Hybrid Transports
 
-`cpp-http` provides comprehensive support for HTTP-over-QUIC (analogous to HTTP/3) when compiled with QUIC enabled (`CPPHTTP_ENABLE_QUIC`). This includes dedicated QUIC servers, QUIC clients, and a dual TCP/UDP hybrid server model.
+`cpp-http` provides comprehensive support for HTTP/3 (HTTP-over-QUIC) when compiled with QUIC enabled (`CPPHTTP_ENABLE_QUIC`). This includes dedicated HTTP/3 servers, HTTP/3 clients, and a dual TCP/UDP hybrid server model.
 
 ### 1. Architecture & Transport Classes
 
@@ -607,13 +607,13 @@ Depending on your compilation options, the following aliases are available:
 | :--- | :--- | :--- |
 | `HttpServer` | `TcpServerTransport` | TCP (Standard HTTP / HTTPS) |
 | `HttpClient` | `TcpClientTransport` | TCP (Standard HTTP / HTTPS client) |
-| `QuicHttpServer` | `QuicServerTransport` | UDP (HTTP over QUIC server) |
-| `HybridHttpServer` | `HybridServerTransport` | TCP & UDP (Dual HTTPS & QUIC server) |
+| `QuicHttpServer` | `QuicServerTransport` | UDP (HTTP/3 Server) |
+| `HybridHttpServer` | `HybridServerTransport` | TCP & UDP (Dual HTTPS & HTTP/3 Server) |
 
-### 2. Hybrid HTTP/QUIC Server
+### 2. Hybrid HTTP/3 Server
 
 A `HybridHttpServer` hosts both a standard TCP (HTTPS) listener and a UDP (QUIC) listener on the same port. 
-By default, the server automatically injects the `Alt-Svc` header into TCP responses to advertise QUIC support to client browsers (e.g., `Alt-Svc: h3=":4433"`).
+By default, the server automatically injects the `Alt-Svc` header into TCP responses to advertise HTTP/3 support to client browsers (e.g., `Alt-Svc: h3=":4433"`).
 
 #### Configuration Example
 

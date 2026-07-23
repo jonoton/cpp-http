@@ -45,3 +45,7 @@ docs/.jekyll-metadata/
 docs/.bundle/*
 !docs/.bundle/config
 vendor/
+
+# Test generated files
+tests/*.log
+tests/quic_chrome_profile/

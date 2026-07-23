@@ -46,6 +46,7 @@ std::string FindCertFile(const std::string &filename) {
 }
 
 int main(int argc, char *argv[]) {
+  std::setvbuf(stdout, NULL, _IONBF, 0);
   uint16_t port = 4433;
   std::string bind_address = "0.0.0.0";
   if (argc > 1) {
