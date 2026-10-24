@@ -187,6 +187,26 @@ The library features integration tests validating full compatibility with standa
 
 ---
 
+## Benchmarking
+
+To test the server's throughput and verify scalability under heavy concurrent load, use the automated benchmark script:
+
+```bash
+./tests/benchmark/run_benchmark.sh 8080
+```
+
+> **Note:** The benchmark compiles standalone Release binaries in `build-bench/` and verifies port availability before execution.
+
+This script orchestrates a full suite of tests including:
+1. **Raw Network Throughput**: A direct comparison of TCP vs. HTTP/3 (QUIC) raw download speeds for large 20MB payloads.
+2. **Open-Loop Load Testing**: Artillery.io multi-step scenarios and WebSocket echo workloads validating stability, latency distributions, and routing under fixed arrival rates.
+3. **Closed-Loop Saturation & Scaling**: Autocannon saturation sweeps driving concurrent connections back-to-back across 1 worker thread vs. 4 worker threads to measure peak throughput (req/sec), multi-core scaling efficiency, and per-thread CPU utilization on plaintext and compressed endpoints.
+4. **Diagnostics Dashboard**: Outputs a consolidated dashboard tracking throughput, scaling ratios, latency metrics, and resource footprints (Peak & Avg CPU, Memory).
+
+*Environment configuration: `BENCH_THREADS="1 4"` configures the C++ server worker threads to benchmark (e.g. `"1 4 8"`); `SKIP_SATURATION=1` skips the saturation phase; `SAT_CONNECTIONS=100`, `SAT_WORKERS=4` (client load-generator worker threads), `SAT_DURATION=10`, and `SAT_RUNS=1` can be customized.*
+
+---
+
 ## Directory Overview
 
 - [cpphttp.hpp](file:///workspaces/cpp-http/cpphttp.hpp): The complete single-header HTTP server and client library.

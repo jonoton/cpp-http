@@ -22,3 +22,9 @@ RUN curl -LO https://github.com/stunnel/static-curl/releases/download/8.21.0/cur
     && tar -xJvf curl-linux-x86_64-glibc-8.21.0.tar.xz \
     && mv curl /usr/local/bin/curl-http3 \
     && rm -f SHA256SUMS curl-linux-x86_64-glibc-8.21.0.tar.xz
+
+# Install Node.js 22 (required for Artillery benchmarks)
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
+    && apt-get clean -y && rm -rf /var/lib/apt/lists/*
+

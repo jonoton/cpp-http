@@ -49,3 +49,13 @@ vendor/
 # Test generated files
 tests/*.log
 tests/quic_chrome_profile/
+
+# Node / Artillery Benchmarks
+node_modules/
+tests/benchmark/node_modules/
+tests/benchmark/*.log
+tests/benchmark/*.json
+tests/benchmark/*.html
+tests/benchmark/*.txt
+!tests/benchmark/package.json
+!tests/benchmark/package-lock.json

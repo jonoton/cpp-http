@@ -1,0 +1,22 @@
+config:
+  target: "ws://localhost:8080/ws"
+  phases:
+    - duration: 3
+      arrivalRate: 20
+      name: "Warm up"
+    - duration: 5
+      arrivalRate: 20
+      rampTo: 100
+      name: "Ramp up load"
+    - duration: 5
+      arrivalRate: 100
+      name: "Sustained load"
+
+scenarios:
+  - name: "WebSocket Echo workload"
+    engine: ws
+    flow:
+      - send: "benchmarking websocket echo payload"
+      - think: 0.1
+      - send: "ping ping"
+      - think: 0.1

@@ -10,3 +10,7 @@ add_executable(test_http test_http.cpp)
 target_link_libraries(test_http PRIVATE cpphttp::cpphttp GTest::gtest_main)
 target_include_directories(test_http PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME HttpTests COMMAND test_http)
+
+add_executable(benchmark_server benchmark/benchmark_server.cpp)
+target_link_libraries(benchmark_server PRIVATE cpphttp::cpphttp)
+

@@ -35,8 +35,17 @@ std::string FindCertFile(const std::string &filename) {
   return "certs/" + filename;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   uint16_t port = 8080;
+  if (argc > 1) {
+    try {
+      int p = std::stoi(argv[1]);
+      if (p > 0 && p <= 65535) {
+        port = static_cast<uint16_t>(p);
+      }
+    } catch (...) {
+    }
+  }
 
   cpphttp::HybridHttpServer server(port);
   server.SetMaxBodySize(PAYLOAD_SIZE * 2);

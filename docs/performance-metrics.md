@@ -191,4 +191,24 @@ std::cout << "Active HTTP Connections: " << stats.active_connections << "\n"
 ```
 
 ---
+
+## 6. Automated Load Testing
+
+For automated end-to-end performance verification, `cpp-http` provides a comprehensive load testing suite in the `tests/benchmark/` directory combining open-loop scenario testing (Artillery.io) and closed-loop saturation testing (autocannon).
+
+To run the full suite (which tests standard HTTP, WebSockets, HTTP/3 QUIC, open-loop stability, and closed-loop multi-thread scalability):
+
+```bash
+./tests/benchmark/run_benchmark.sh 8080
+```
+
+> **Note:** The benchmark compiles standalone Release binaries in `build-bench/` and verifies port availability before execution. Open-loop tests validate protocol correctness under fixed arrival rates; closed-loop saturation tests drive maximum throughput to measure real multi-core scaling efficiency. You can configure the C++ server worker threads to benchmark via `BENCH_THREADS="1 4 8"` (default `"1 4"`), customize the saturation client load generator with `SAT_CONNECTIONS=100`, `SAT_WORKERS=4` (Node.js worker threads), `SAT_DURATION=10`, `SAT_RUNS=1`, or skip saturation with `SKIP_SATURATION=1`.
+
+The script outputs a unified performance dashboard reporting:
+- Open-loop throughput and latency distributions across endpoints and WebSockets
+- Maximum closed-loop saturation throughput (req/sec) and multi-core scaling efficiency (1 thread vs. 4 threads)
+- Peak and Average CPU & Memory footprints
+- Raw TCP vs HTTP/3 QUIC throughput comparisons (20MB payload)
+
+---
 [< Previous: Advanced Usage](./advanced-usage.html) | [🏠 Home](./) | [Next: Architecture & Examples >](./architecture-and-examples.html)

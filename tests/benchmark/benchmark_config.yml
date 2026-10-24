@@ -1,0 +1,49 @@
+config:
+  target: "http://localhost:8080"
+  phases:
+    - duration: 3
+      arrivalRate: 20
+      name: "Warm up"
+    - duration: 5
+      arrivalRate: 20
+      rampTo: 100
+      name: "Ramp up load"
+    - duration: 5
+      arrivalRate: 100
+      name: "Sustained load"
+  defaults:
+    headers:
+      User-Agent: "Artillery-Benchmark"
+
+scenarios:
+  - name: "Standard HTTP endpoints workload"
+    weight: 4
+    flow:
+      # 1. Plaintext GET /
+      - get:
+          url: "/"
+      
+      # 2. POST /echo with a JSON payload
+      - post:
+          url: "/echo"
+          headers:
+            Content-Type: "application/json"
+          json:
+            message: "benchmarking cpp-http"
+            runner: "artillery"
+            timestamp: "{{ $epoch }}"
+            randomId: "{{ $randomNumber(1000, 9999) }}"
+
+      # 3. Dynamic GET /user/:id
+      - get:
+          url: "/user/{{ $randomNumber(1, 999999) }}"
+
+      # 4. GET /search with query parameters
+      - get:
+          url: "/search?query=benchmark&limit={{ $randomNumber(10, 100) }}&offset=0&sort=desc"
+
+      # 5. GET /data with Gzip compression requested
+      - get:
+          url: "/data"
+          headers:
+            Accept-Encoding: "gzip"

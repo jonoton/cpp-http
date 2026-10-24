@@ -1,0 +1,13 @@
+{
+  "name": "cpp-http-benchmarks",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Benchmark tests using Artillery and autocannon for cpp-http",
+  "scripts": {
+    "benchmark": "artillery run benchmark_config.yml"
+  },
+  "devDependencies": {
+    "artillery": "^2.0.0",
+    "autocannon": "^8.0.0"
+  }
+}
