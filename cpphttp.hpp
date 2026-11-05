@@ -1,3 +1,8 @@
+// cpp-http - A lightweight, high-performance, header-only C++17 HTTP/1.1 and HTTP/3 server and client library
+// https://github.com/jonoton/cpp-http
+// Copyright (c) 2026 cpp-http
+// Licensed under the MIT License. SPDX-License-Identifier: MIT
+
 #pragma once
 
 #include <brotli/decode.h>
@@ -36,7 +41,7 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 10;
+constexpr int VERSION_MINOR = 11;
 constexpr int VERSION_PATCH = 0;
 
 /**
