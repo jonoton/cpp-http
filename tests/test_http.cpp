@@ -301,6 +301,65 @@ struct TestClientSession {
   bool disconnected = false;
 };
 
+// Minimal raw TCP connection used to send hand-crafted HTTP bytes.
+class RawTcpConnection {
+ public:
+  explicit RawTcpConnection(uint16_t port)
+      : session_(std::make_shared<TestClientSession>()) {
+    auto session = session_;
+    client_.SetDataHandler(
+        [session](uint64_t, const std::vector<uint8_t> &data) {
+          std::lock_guard<std::mutex> lock(session->mutex);
+          session->buffer.insert(session->buffer.end(), data.begin(),
+                                 data.end());
+          session->cv.notify_all();
+        });
+    auto sub = client_.GetEventBroker().Subscribe<cpptcpnet::ConnectionEvent>(
+        "state_events");
+    worker_.AddSubscription<cpptcpnet::ConnectionEvent>(
+        sub, [session](const cpptcpnet::ConnectionEvent &e) {
+          std::lock_guard<std::mutex> lock(session->mutex);
+          if (e.state == cpptcpnet::ConnectionState::Connected)
+            session->connected = true;
+          else if (e.state == cpptcpnet::ConnectionState::Disconnected)
+            session->disconnected = true;
+          session->cv.notify_all();
+        });
+    worker_.Start();
+    client_.Start();
+    session_id_ = client_.Connect("127.0.0.1", port);
+    std::unique_lock<std::mutex> lock(session_->mutex);
+    session_->cv.wait_for(lock, std::chrono::seconds(5),
+                          [&] { return session_->connected; });
+  }
+  ~RawTcpConnection() {
+    client_.Stop();
+    worker_.Stop();
+  }
+  void Send(const std::string &data) { client_.Send(session_id_, data); }
+  // Waits until `pred(received)` holds or the timeout expires.
+  std::string WaitFor(std::function<bool(const std::string &)> pred,
+                      std::chrono::milliseconds timeout =
+                          std::chrono::seconds(5)) {
+    std::unique_lock<std::mutex> lock(session_->mutex);
+    session_->cv.wait_for(lock, timeout, [&] {
+      return pred(std::string(session_->buffer.begin(),
+                              session_->buffer.end()));
+    });
+    return std::string(session_->buffer.begin(), session_->buffer.end());
+  }
+  bool Disconnected() {
+    std::lock_guard<std::mutex> lock(session_->mutex);
+    return session_->disconnected;
+  }
+
+ private:
+  cpptcpnet::TcpClient client_;
+  cpppubsub::Worker worker_;
+  std::shared_ptr<TestClientSession> session_;
+  uint64_t session_id_ = 0;
+};
+
 bool PerformWsHandshake(std::shared_ptr<TestClientSession> session,
                         cpptcpnet::TcpClient &client, uint64_t session_id,
                         const std::string &path) {
@@ -2698,6 +2757,97 @@ TEST(HttpIntegrationTest, SmugglingDuplicateTransferEncoding) {
 
   client.Stop();
   worker.Stop();
+  server.Stop();
+}
+
+// A keep-alive request following a chunked streaming upload on the same
+// connection must be parsed correctly (consumed chunk bytes were left behind).
+TEST(HttpIntegrationTest, StreamRouteChunkedThenKeepAliveRequest) {
+  cpphttp::HttpServer server(8161, "127.0.0.1");
+  server.PostStream("/up", [](const cpphttp::HttpRequest &, const std::string &,
+                              bool last) -> std::optional<cpphttp::HttpResponse> {
+    if (last) return cpphttp::HttpResponse::Plain("done");
+    return std::nullopt;
+  });
+  server.Get("/next", [](const cpphttp::HttpRequest &) {
+    return cpphttp::HttpResponse::Plain("next-ok");
+  });
+  server.Start();
+
+  RawTcpConnection conn(8161);
+  conn.Send(
+      "POST /up HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+      "5\r\nhello\r\n0\r\n\r\n"
+      "GET /next HTTP/1.1\r\nHost: x\r\n\r\n");
+  std::string out = conn.WaitFor([](const std::string &s) {
+    return s.find("next-ok") != std::string::npos ||
+           s.find("400 Bad Request") != std::string::npos;
+  });
+  EXPECT_NE(out.find("done"), std::string::npos);
+  EXPECT_NE(out.find("next-ok"), std::string::npos);
+  EXPECT_EQ(out.find("400 Bad Request"), std::string::npos);
+  server.Stop();
+}
+
+// If a stream handler answers before the body is complete, the remaining
+// body bytes must not be interpreted as a new request.
+TEST(HttpIntegrationTest, StreamRouteEarlyResponseDoesNotSmuggle) {
+  cpphttp::HttpServer server(8162, "127.0.0.1");
+  server.PostStream("/up", [](const cpphttp::HttpRequest &, const std::string &,
+                              bool) -> std::optional<cpphttp::HttpResponse> {
+    return cpphttp::HttpResponse::Plain("early", 403);
+  });
+  std::atomic<int> smuggled{0};
+  server.Get("/smuggled", [&](const cpphttp::HttpRequest &) {
+    ++smuggled;
+    return cpphttp::HttpResponse::Plain("SMUGGLED");
+  });
+  server.Start();
+
+  RawTcpConnection conn(8162);
+  std::string hidden = "GET /smuggled HTTP/1.1\r\nHost: x\r\n\r\n";
+  std::string body = "A" + hidden;
+  conn.Send("POST /up HTTP/1.1\r\nHost: x\r\nContent-Length: " +
+            std::to_string(body.size()) + "\r\n\r\n" + body.substr(0, 1));
+  std::string out = conn.WaitFor([](const std::string &s) {
+    return s.find("early") != std::string::npos;
+  });
+  EXPECT_NE(out.find("Connection: close"), std::string::npos);
+  conn.Send(body.substr(1));
+  out = conn.WaitFor(
+      [](const std::string &s) {
+        return s.find("SMUGGLED") != std::string::npos;
+      },
+      std::chrono::milliseconds(500));
+  EXPECT_EQ(out.find("SMUGGLED"), std::string::npos);
+  EXPECT_EQ(smuggled.load(), 0);
+  server.Stop();
+}
+
+// Pipelined bytes after a "Connection: close" request are ignored.
+TEST(HttpIntegrationTest, PipelinedRequestAfterCloseIsIgnored) {
+  cpphttp::HttpServer server(8163, "127.0.0.1");
+  std::atomic<int> second{0};
+  server.Get("/first", [](const cpphttp::HttpRequest &) {
+    return cpphttp::HttpResponse::Plain("first");
+  });
+  server.Get("/second", [&](const cpphttp::HttpRequest &) {
+    ++second;
+    return cpphttp::HttpResponse::Plain("second");
+  });
+  server.Start();
+
+  RawTcpConnection conn(8163);
+  conn.Send(
+      "GET /first HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+      "GET /second HTTP/1.1\r\nHost: x\r\n\r\n");
+  std::string out = conn.WaitFor(
+      [](const std::string &s) {
+        return s.find("second") != std::string::npos;
+      },
+      std::chrono::milliseconds(500));
+  EXPECT_NE(out.find("first"), std::string::npos);
+  EXPECT_EQ(second.load(), 0);
   server.Stop();
 }
 

@@ -4330,6 +4330,9 @@ class HttpServerImpl {
     size_t content_length = 0;
     bool is_chunked = false;
     size_t stream_bytes_received = 0;
+    // Set once the connection is being closed after a response; any further
+    // bytes from the peer are ignored.
+    bool discard_input = false;
   };
 
   /**
@@ -4956,6 +4959,7 @@ class HttpServerImpl {
         std::string response_data = response.Serialize();
         {
           std::lock_guard<std::mutex> close_lock(close_mutex_);
+          session->discard_input = true;
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
@@ -4969,6 +4973,7 @@ class HttpServerImpl {
         std::string response_data = response.Serialize();
         {
           std::lock_guard<std::mutex> close_lock(close_mutex_);
+          session->discard_input = true;
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
@@ -5001,53 +5006,92 @@ class HttpServerImpl {
       completed = (session->stream_bytes_received >= session->content_length);
     }
 
+    // A handler may answer before the whole request body has arrived. The
+    // rest of that body is still on the wire; it must never be parsed as a
+    // new request (request smuggling), so the connection is closed after the
+    // response and any further input is discarded.
+    bool responded_early = false;
     if (handler_response) {
+      responded_early = !completed;
       completed = true;
     } else if (completed) {
       handler_response = session->stream_handler(session->request, "", true);
+      if (!handler_response) {
+        handler_response = HttpResponse::Plain(
+            "500 Internal Server Error: stream handler returned no response",
+            500);
+      }
     }
 
     if (completed) {
-      if (handler_response) {
-        std::string response_data;
-        std::string headers_data;
-        if (handler_response->is_file) {
-          headers_data =
-              handler_response->Serialize(session->request.method, true);
-          transport_->Send(session_id, headers_data);
-          if (session->request.method != "HEAD") {
-            session->is_streaming_file = true;
-            session->file_stream = std::make_shared<std::ifstream>(
-                handler_response->file_path, std::ios::binary);
-            if (handler_response->file_offset > 0) {
-              session->file_stream->seekg(handler_response->file_offset);
-            }
-            session->file_bytes_remaining = handler_response->file_length > 0
-                                                ? handler_response->file_length
-                                                : std::string::npos;
-            session->file_bytes_in_flight = headers_data.size();
-
-            std::string conn_header = session->request.GetHeader("Connection");
-            std::transform(conn_header.begin(), conn_header.end(),
-                           conn_header.begin(), safe_tolower);
-            bool should_close =
-                (conn_header.find("close") != std::string::npos) ||
-                (session->request.version == "HTTP/1.0" &&
-                 conn_header.find("keep-alive") == std::string::npos);
-            session->should_close_after_file = should_close;
-            PumpFileTransfer(session_id, session);
-          }
-        } else {
-          response_data = handler_response->Serialize(session->request.method);
-          transport_->Send(session_id, response_data);
-        }
+      std::string conn_header = session->request.GetHeader("Connection");
+      std::transform(conn_header.begin(), conn_header.end(),
+                     conn_header.begin(), safe_tolower);
+      bool should_close =
+          responded_early ||
+          (conn_header.find("close") != std::string::npos) ||
+          (session->request.version == "HTTP/1.0" &&
+           conn_header.find("keep-alive") == std::string::npos);
+      if (should_close) {
+        handler_response->headers["Connection"] = "close";
       }
-      buffer.erase(buffer.begin(), buffer.begin() + session->body_start_idx);
+
+      bool is_head = session->request.method == "HEAD";
+      if (handler_response->is_file) {
+        std::string headers_data =
+            handler_response->Serialize(session->request.method, true);
+        if (should_close && is_head) {
+          std::lock_guard<std::mutex> close_lock(close_mutex_);
+          session->discard_input = true;
+          sessions_to_close_.insert(session_id);
+          pending_send_bytes_[session_id] = headers_data.size();
+        }
+        transport_->Send(session_id, headers_data);
+        if (!is_head) {
+          session->is_streaming_file = true;
+          session->file_stream = std::make_shared<std::ifstream>(
+              handler_response->file_path, std::ios::binary);
+          if (handler_response->file_offset > 0) {
+            session->file_stream->seekg(handler_response->file_offset);
+          }
+          session->file_bytes_remaining = handler_response->file_length > 0
+                                              ? handler_response->file_length
+                                              : std::string::npos;
+          session->file_bytes_in_flight = headers_data.size();
+          session->should_close_after_file = should_close;
+          session->is_compressed_stream = false;
+          session->compressor.reset();
+          PumpFileTransfer(session_id, session);
+        }
+      } else {
+        std::string response_data =
+            handler_response->Serialize(session->request.method);
+        if (should_close) {
+          std::lock_guard<std::mutex> close_lock(close_mutex_);
+          session->discard_input = true;
+          sessions_to_close_.insert(session_id);
+          pending_send_bytes_[session_id] = response_data.size();
+        }
+        transport_->Send(session_id, response_data);
+      }
+
+      if (should_close) {
+        session->discard_input = true;
+        buffer.clear();
+      } else if (session->is_chunked) {
+        // Drop the request headers and every chunk byte consumed so far.
+        buffer.erase(buffer.begin(),
+                     buffer.begin() + session->chunk_parsed_up_to);
+      } else {
+        // Content-Length body bytes were already erased as they streamed.
+        buffer.erase(buffer.begin(), buffer.begin() + session->body_start_idx);
+      }
       session->header_parsed = false;
+      session->is_stream_route = false;
       session->partial_body.clear();
       session->chunk_parsed_up_to = 0;
       session->parsing_chunked = false;
-      return true;
+      return !should_close;
     }
 
     return false;
@@ -5080,6 +5124,9 @@ class HttpServerImpl {
     }
 
     std::lock_guard<std::mutex> session_lock(session->mutex);
+    if (session->discard_input) {
+      return;
+    }
 
     auto &buffer = session->buffer;
     buffer.insert(buffer.end(), data.begin(), data.end());
@@ -5101,6 +5148,7 @@ class HttpServerImpl {
           std::string response_data = response.Serialize();
           {
             std::lock_guard<std::mutex> close_lock(close_mutex_);
+            session->discard_input = true;
             sessions_to_close_.insert(session_id);
             pending_send_bytes_[session_id] = response_data.size();
           }
@@ -5121,6 +5169,7 @@ class HttpServerImpl {
           size_t close_frame_size = CreateWsFrame(0x08, payload).size();
           {
             std::lock_guard<std::mutex> close_lock(close_mutex_);
+            session->discard_input = true;
             sessions_to_close_.insert(session_id);
             pending_send_bytes_[session_id] = close_frame_size;
           }
@@ -5244,6 +5293,7 @@ class HttpServerImpl {
         std::string response_data = response.Serialize();
         {
           std::lock_guard<std::mutex> close_lock(close_mutex_);
+          session->discard_input = true;
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
@@ -5299,6 +5349,7 @@ class HttpServerImpl {
             std::string response_data = response.Serialize();
             {
               std::lock_guard<std::mutex> close_lock(close_mutex_);
+              session->discard_input = true;
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
@@ -5333,6 +5384,7 @@ class HttpServerImpl {
         std::string response_data = response.Serialize();
         {
           std::lock_guard<std::mutex> close_lock(close_mutex_);
+          session->discard_input = true;
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
@@ -5367,6 +5419,7 @@ class HttpServerImpl {
           std::string response_data = response.Serialize();
           {
             std::lock_guard<std::mutex> close_lock(close_mutex_);
+            session->discard_input = true;
             sessions_to_close_.insert(session_id);
             pending_send_bytes_[session_id] = response_data.size();
           }
@@ -5406,6 +5459,7 @@ class HttpServerImpl {
             std::string response_data = response.Serialize();
             {
               std::lock_guard<std::mutex> close_lock(close_mutex_);
+              session->discard_input = true;
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
@@ -5419,6 +5473,7 @@ class HttpServerImpl {
             std::string response_data = response.Serialize();
             {
               std::lock_guard<std::mutex> close_lock(close_mutex_);
+              session->discard_input = true;
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
@@ -5441,6 +5496,7 @@ class HttpServerImpl {
               std::string response_data = response.Serialize();
               {
                 std::lock_guard<std::mutex> close_lock(close_mutex_);
+                session->discard_input = true;
                 sessions_to_close_.insert(session_id);
                 pending_send_bytes_[session_id] = response_data.size();
               }
@@ -5456,6 +5512,7 @@ class HttpServerImpl {
             std::string response_data = response.Serialize();
             {
               std::lock_guard<std::mutex> close_lock(close_mutex_);
+              session->discard_input = true;
               sessions_to_close_.insert(session_id);
               pending_send_bytes_[session_id] = response_data.size();
             }
@@ -5568,6 +5625,7 @@ class HttpServerImpl {
 
         if (should_close && !upgrade_to_ws && !response.is_file) {
           std::lock_guard<std::mutex> lock(close_mutex_);
+          session->discard_input = true;
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = total_sent;
         }
@@ -5645,6 +5703,8 @@ class HttpServerImpl {
           search_start = 0;
 
           if (should_close) {
+            session->discard_input = true;
+            buffer.clear();
             return;
           }
         }
@@ -5655,6 +5715,7 @@ class HttpServerImpl {
         std::string response_data = response.Serialize();
         {
           std::lock_guard<std::mutex> close_lock(close_mutex_);
+          session->discard_input = true;
           sessions_to_close_.insert(session_id);
           pending_send_bytes_[session_id] = response_data.size();
         }
