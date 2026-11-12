@@ -3323,6 +3323,54 @@ inline std::vector<std::string> split_path(const std::string &path) {
   return segments;
 }
 
+// Strictly parses a Content-Length value: 1*DIGIT with optional surrounding
+// whitespace (RFC 9110 Section 8.6). Rejects signs, hex, trailing garbage and
+// lists such as "5, 5" that lenient parsers might read differently.
+inline bool ParseContentLength(const std::string &value, uint64_t &out) {
+  size_t b = value.find_first_not_of(" \t");
+  if (b == std::string::npos) return false;
+  size_t e = value.find_last_not_of(" \t");
+  if (e - b + 1 > 19) return false;  // would overflow / absurdly large
+  uint64_t v = 0;
+  for (size_t i = b; i <= e; ++i) {
+    char c = value[i];
+    if (c < '0' || c > '9') return false;
+    v = v * 10 + static_cast<uint64_t>(c - '0');
+  }
+  out = v;
+  return true;
+}
+
+// Parses a chunk-size line: 1*HEXDIG, optionally followed by BWS and
+// chunk extensions (RFC 9112 Section 7.1). Rejects "0x" prefixes, signs and
+// leading whitespace.
+inline bool ParseChunkSizeLine(const std::string &line, size_t &out) {
+  size_t end = line.find(';');
+  std::string digits = line.substr(0, end);
+  size_t last = digits.find_last_not_of(" \t");
+  if (last == std::string::npos) return false;
+  digits.resize(last + 1);
+  if (digits.empty() || digits.size() > 15) return false;
+  size_t v = 0;
+  for (char c : digits) {
+    int d;
+    if (c >= '0' && c <= '9')
+      d = c - '0';
+    else if (c >= 'a' && c <= 'f')
+      d = c - 'a' + 10;
+    else if (c >= 'A' && c <= 'F')
+      d = c - 'A' + 10;
+    else
+      return false;
+    v = v * 16 + static_cast<size_t>(d);
+  }
+  out = v;
+  return true;
+}
+
+// Longest chunk-size line (size + extensions) accepted before CRLF.
+constexpr size_t kMaxChunkSizeLine = 1024;
+
 // Helper to parse chunked transfer encoding body incrementally to avoid O(N^2)
 // complexity
 template <typename Container>
@@ -3340,13 +3388,19 @@ inline bool ParseChunkedBodyIncrementalImpl(
     auto it_crlf = std::search(buffer.begin() + idx, buffer.end(),
                                reinterpret_cast<const uint8_t *>("\r\n"),
                                reinterpret_cast<const uint8_t *>("\r\n") + 2);
-    if (it_crlf == buffer.end()) return false;
+    if (it_crlf == buffer.end()) {
+      if (buffer.size() - idx > kMaxChunkSizeLine) bad_request = true;
+      return false;
+    }
+    if (static_cast<size_t>(std::distance(buffer.begin() + idx, it_crlf)) >
+        kMaxChunkSizeLine) {
+      bad_request = true;
+      return false;
+    }
 
     std::string size_str(buffer.begin() + idx, it_crlf);
     size_t chunk_size = 0;
-    try {
-      chunk_size = std::stoul(size_str, nullptr, 16);
-    } catch (const std::exception &e) {
+    if (!ParseChunkSizeLine(size_str, chunk_size)) {
       bad_request = true;
       return false;
     }
@@ -5379,7 +5433,11 @@ class HttpServerImpl {
           session->is_chunked = (te_val.find("chunked") != std::string::npos);
           if (!session->is_chunked) {
             std::string cl_val = session->request.GetHeader("Content-Length");
-            session->content_length = cl_val.empty() ? 0 : std::stoull(cl_val);
+            uint64_t cl = 0;
+            if (!cl_val.empty() && !ParseContentLength(cl_val, cl)) {
+              throw std::invalid_argument("Invalid Content-Length");
+            }
+            session->content_length = static_cast<size_t>(cl);
           }
           session->stream_bytes_received = 0;
           session->chunk_parsed_up_to = body_start_idx;
@@ -5492,9 +5550,10 @@ class HttpServerImpl {
         } else {
           std::string cl_val = request.GetHeader("Content-Length");
           if (!cl_val.empty()) {
-            try {
-              content_length = std::stoull(cl_val);
-            } catch (const std::exception &) {
+            uint64_t parsed_cl = 0;
+            if (ParseContentLength(cl_val, parsed_cl)) {
+              content_length = static_cast<size_t>(parsed_cl);
+            } else {
               HttpResponse response =
                   HttpResponse::Plain("400 Bad Request", 400);
               response.headers["Connection"] = "close";
@@ -6523,10 +6582,13 @@ class HttpClientImpl {
           std::string cl_val = req.GetHeader("Content-Length");
           bool has_cl = !cl_val.empty();
           if (has_cl) {
-            try {
-              content_length = std::stoull(cl_val);
-            } catch (const std::exception &) {
+            uint64_t parsed_cl = 0;
+            if (!ParseContentLength(cl_val, parsed_cl)) {
+              // Unparseable framing: the response cannot be delimited.
+              disconnected_ = true;
+              return true;
             }
+            content_length = static_cast<size_t>(parsed_cl);
           }
 
           if (has_cl) {

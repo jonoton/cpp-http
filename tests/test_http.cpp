@@ -31,6 +31,37 @@ TEST(HttpUtilityTest, Base64Encode) {
             "hZWg==");
 }
 
+TEST(HttpUtilityTest, StrictContentLengthParsing) {
+  uint64_t v = 0;
+  EXPECT_TRUE(cpphttp::ParseContentLength("0", v));
+  EXPECT_EQ(v, 0u);
+  EXPECT_TRUE(cpphttp::ParseContentLength(" 1234 ", v));
+  EXPECT_EQ(v, 1234u);
+  EXPECT_FALSE(cpphttp::ParseContentLength("", v));
+  EXPECT_FALSE(cpphttp::ParseContentLength("5abc", v));
+  EXPECT_FALSE(cpphttp::ParseContentLength("+5", v));
+  EXPECT_FALSE(cpphttp::ParseContentLength("-1", v));
+  EXPECT_FALSE(cpphttp::ParseContentLength("5, 5", v));
+  EXPECT_FALSE(cpphttp::ParseContentLength("0x10", v));
+  EXPECT_FALSE(cpphttp::ParseContentLength("99999999999999999999", v));
+}
+
+TEST(HttpUtilityTest, StrictChunkSizeParsing) {
+  size_t v = 0;
+  EXPECT_TRUE(cpphttp::ParseChunkSizeLine("1a", v));
+  EXPECT_EQ(v, 26u);
+  EXPECT_TRUE(cpphttp::ParseChunkSizeLine("FF;name=value", v));
+  EXPECT_EQ(v, 255u);
+  EXPECT_TRUE(cpphttp::ParseChunkSizeLine("10 ;ext", v));
+  EXPECT_EQ(v, 16u);
+  EXPECT_FALSE(cpphttp::ParseChunkSizeLine("", v));
+  EXPECT_FALSE(cpphttp::ParseChunkSizeLine(" 10", v));
+  EXPECT_FALSE(cpphttp::ParseChunkSizeLine("0x10", v));
+  EXPECT_FALSE(cpphttp::ParseChunkSizeLine("+10", v));
+  EXPECT_FALSE(cpphttp::ParseChunkSizeLine("-1", v));
+  EXPECT_FALSE(cpphttp::ParseChunkSizeLine("1g", v));
+}
+
 TEST(HttpUtilityTest, ComputeAcceptKey) {
   // Standard test case from RFC 6455
   EXPECT_EQ(cpphttp::ComputeAcceptKey("dGhlIHNhbXBsZSBub25jZQ=="),
@@ -2821,6 +2852,24 @@ TEST(HttpIntegrationTest, StreamRouteEarlyResponseDoesNotSmuggle) {
       std::chrono::milliseconds(500));
   EXPECT_EQ(out.find("SMUGGLED"), std::string::npos);
   EXPECT_EQ(smuggled.load(), 0);
+  server.Stop();
+}
+
+TEST(HttpIntegrationTest, MalformedContentLengthRejected) {
+  cpphttp::HttpServer server(8166, "127.0.0.1");
+  std::atomic<int> hits{0};
+  server.Post("/p", [&](const cpphttp::HttpRequest &) {
+    ++hits;
+    return cpphttp::HttpResponse::Plain("ok");
+  });
+  server.Start();
+  RawTcpConnection conn(8166);
+  conn.Send("POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 5abc\r\n\r\nhello");
+  std::string out = conn.WaitFor([](const std::string &s) {
+    return s.find("HTTP/1.1 ") != std::string::npos;
+  });
+  EXPECT_NE(out.find("400 Bad Request"), std::string::npos);
+  EXPECT_EQ(hits.load(), 0);
   server.Stop();
 }
 
