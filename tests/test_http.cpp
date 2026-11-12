@@ -3575,8 +3575,8 @@ TEST(HttpCompressionTest, CompressibleResponsesSendVary) {
   auto big_identity = client.Get("/big", {{"Accept-Encoding", "identity"}});
   EXPECT_EQ(big_identity.GetHeader("Vary"), "Accept-Encoding");
   EXPECT_TRUE(big_identity.GetHeader("Content-Encoding").empty());
-  auto small = client.Get("/small");
-  EXPECT_TRUE(small.GetHeader("Vary").empty());
+  auto small_resp = client.Get("/small");
+  EXPECT_TRUE(small_resp.GetHeader("Vary").empty());
   server.Stop();
 }
 
