@@ -4747,6 +4747,15 @@ class HttpServerImpl {
   void SetAdvertiseAltSvc(bool enable) { advertise_alt_svc_ = enable; }
   bool GetAdvertiseAltSvc() const { return advertise_alt_svc_; }
 
+  /**
+   * @brief Whether HttpRequest::client_ip is taken from the X-Forwarded-For
+   * header. Disabled by default: any client can set that header, so only
+   * enable it when the server sits behind a trusted reverse proxy that
+   * overwrites it. When disabled, client_ip is the transport peer address.
+   */
+  void SetTrustProxyHeaders(bool trust) { trust_proxy_headers_ = trust; }
+  bool GetTrustProxyHeaders() const { return trust_proxy_headers_; }
+
  private:
   struct Route {
     std::string method;
@@ -4805,6 +4814,23 @@ class HttpServerImpl {
   int gzip_level_ = Z_DEFAULT_COMPRESSION;
   size_t min_compression_size_ = 1024;
   bool advertise_alt_svc_ = true;
+  bool trust_proxy_headers_ = false;
+
+  std::string ResolveClientIp(const HttpRequest &request,
+                              uint64_t session_id) {
+    if (trust_proxy_headers_) {
+      std::string forwarded = request.GetHeader("X-Forwarded-For");
+      if (!forwarded.empty()) {
+        std::string first = forwarded.substr(0, forwarded.find(','));
+        size_t b = first.find_first_not_of(" \t");
+        size_t e = first.find_last_not_of(" \t");
+        if (b != std::string::npos) {
+          return first.substr(b, e - b + 1);
+        }
+      }
+    }
+    return transport_->GetPeerAddress(session_id).ip;
+  }
 
   void PumpFileTransfer(uint64_t session_id,
                         std::shared_ptr<SessionState> session) {
@@ -5328,18 +5354,8 @@ class HttpServerImpl {
 
         if (is_stream) {
           session->request = std::move(temp_request);
-          std::string forwarded = session->request.GetHeader("X-Forwarded-For");
-          if (!forwarded.empty()) {
-            size_t comma_pos = forwarded.find(',');
-            if (comma_pos != std::string::npos) {
-              session->request.client_ip = forwarded.substr(0, comma_pos);
-            } else {
-              session->request.client_ip = forwarded;
-            }
-          } else {
-            auto peer_addr = transport_->GetPeerAddress(session_id);
-            session->request.client_ip = peer_addr.ip;
-          }
+          session->request.client_ip =
+              ResolveClientIp(session->request, session_id);
 
           if (session->request.method.empty() ||
               session->request.path.empty() ||
@@ -5395,18 +5411,7 @@ class HttpServerImpl {
       try {
         HttpRequest request = ParseHeader(raw_header);
 
-        std::string forwarded = request.GetHeader("X-Forwarded-For");
-        if (!forwarded.empty()) {
-          size_t comma_pos = forwarded.find(',');
-          if (comma_pos != std::string::npos) {
-            request.client_ip = forwarded.substr(0, comma_pos);
-          } else {
-            request.client_ip = forwarded;
-          }
-        } else {
-          auto peer_addr = transport_->GetPeerAddress(session_id);
-          request.client_ip = peer_addr.ip;
-        }
+        request.client_ip = ResolveClientIp(request, session_id);
 
         if (request.method.empty() || request.path.empty() ||
             request.version.empty()) {

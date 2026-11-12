@@ -125,7 +125,7 @@ server.Use("/api", [](cpphttp::HttpRequest& request, cpphttp::HttpResponse& resp
 
 `cpp-http` provides a built-in `RateLimiter` middleware class to limit requests per IP address over a sliding time window.
 
-It extracts the client's IP from the `X-Forwarded-For` HTTP header (falling back to the TCP listener's peer address). If an IP exceeds the configured request limit in the given time window, the rate limiter aborts the middleware chain, returns a `429 Too Many Requests` status, and sets a `Retry-After` header indicating when the client can try again.
+It keys requests by `HttpRequest::client_ip`, which is the connection's peer address. If the server runs behind a trusted reverse proxy that sets `X-Forwarded-For`, call `server.SetTrustProxyHeaders(true)` so `client_ip` is taken from the first address in that header instead. Leave it disabled otherwise: any client can send `X-Forwarded-For` and would be able to bypass the limit. If an IP exceeds the configured request limit in the given time window, the rate limiter aborts the middleware chain, returns a `429 Too Many Requests` status, and sets a `Retry-After` header indicating when the client can try again.
 
 #### Global and Scoped Rate Limiting
 

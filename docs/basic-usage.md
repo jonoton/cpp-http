@@ -83,7 +83,7 @@ struct HttpRequest
     HeaderMap headers;                                         // Case-insensitive HTTP Header Map
     MultiHeaderMap multi_headers;                              // Multi-headers map (allows duplicate keys like Set-Cookie)
     std::string body;                                          // Request payload
-    std::string client_ip;                                     // Client IP address (from X-Forwarded-For or Peer Address)
+    std::string client_ip;                                     // Peer address, or X-Forwarded-For if SetTrustProxyHeaders(true)
     std::unordered_map<std::string, std::string> query_params; // Query params (e.g. ?name=val)
     std::unordered_map<std::string, std::string> path_params;  // Dynamically matched segments (e.g. :id)
 

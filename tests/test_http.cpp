@@ -3255,6 +3255,38 @@ TEST(WebSocketIntegrationExtendedTest, ClientPayloadTooLarge) {
   server.Stop();
 }
 
+TEST(RateLimiterTest, SpoofedForwardedForIsIgnoredByDefault) {
+  cpphttp::HttpServer server(8164, "127.0.0.1");
+  server.Use(cpphttp::RateLimiter(1, std::chrono::seconds(60)));
+  server.Get("/ip", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain(req.client_ip);
+  });
+  server.Start();
+
+  cpphttp::HttpClient client("127.0.0.1", 8164);
+  auto r1 = client.Get("/ip", {{"X-Forwarded-For", "10.0.0.1"}});
+  EXPECT_EQ(r1.status_code, 200);
+  EXPECT_EQ(r1.body, "127.0.0.1");
+  // A different spoofed address must not reset the limit.
+  auto r2 = client.Get("/ip", {{"X-Forwarded-For", "10.0.0.2"}});
+  EXPECT_EQ(r2.status_code, 429);
+  server.Stop();
+}
+
+TEST(RateLimiterTest, ForwardedForUsedWhenTrusted) {
+  cpphttp::HttpServer server(8165, "127.0.0.1");
+  server.SetTrustProxyHeaders(true);
+  server.Get("/ip", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain(req.client_ip);
+  });
+  server.Start();
+
+  cpphttp::HttpClient client("127.0.0.1", 8165);
+  auto r = client.Get("/ip", {{"X-Forwarded-For", " 203.0.113.7 , 10.0.0.1"}});
+  EXPECT_EQ(r.body, "203.0.113.7");
+  server.Stop();
+}
+
 TEST(RateLimiterTest, BasicRateLimiting) {
   cpphttp::HttpServer server(8146);
   server.Use(cpphttp::RateLimiter(
