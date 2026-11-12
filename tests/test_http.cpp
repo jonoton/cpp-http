@@ -3886,6 +3886,179 @@ TEST(Http3Test, ReconstructRequestAndParseResponse) {
   EXPECT_EQ(body_str, "Hello World!");
 }
 
+namespace {
+std::string MakePatternedData(size_t size, bool text) {
+  std::string data(size, '\0');
+  for (size_t i = 0; i < size; ++i) {
+    data[i] = text ? static_cast<char>('a' + (i * 7 + i / 97) % 26)
+                   : static_cast<char>((i * 131 + i / 251) & 0xFF);
+  }
+  return data;
+}
+
+struct TempStaticDir {
+  std::filesystem::path dir;
+  TempStaticDir() {
+    dir = std::filesystem::temp_directory_path() /
+          ("cpphttp_quic_static_" +
+           std::to_string(std::chrono::steady_clock::now()
+                              .time_since_epoch()
+                              .count()));
+    std::filesystem::create_directories(dir);
+  }
+  ~TempStaticDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+  }
+  void Write(const std::string &name, const std::string &content) {
+    std::ofstream f(dir / name, std::ios::binary);
+    f << content;
+  }
+};
+}  // namespace
+
+// File responses are sent in many pieces (headers, then pumped chunks). Over
+// QUIC the stream must stay open until the whole body has been written.
+TEST(HttpIntegrationTest, QuicServesLargeStaticFile) {
+  TempStaticDir tmp;
+  std::string binary = MakePatternedData(700 * 1024, false);
+  std::string text = MakePatternedData(500 * 1024, true);
+  tmp.Write("big.bin", binary);
+  tmp.Write("big.txt", text);
+
+  cpphttp::HttpServerImpl<cpphttp::QuicServerTransport> server(0);
+  server.StaticDir("/static", tmp.dir.string());
+  server.Start();
+  uint16_t port = server.GetTransport()->GetServer().GetLocalPort();
+
+  cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
+                                                               port);
+  client.SetTimeout(std::chrono::seconds(10));
+  try {
+    auto res = client.Get("/static/big.bin");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body.size(), binary.size());
+    EXPECT_TRUE(res.body == binary);
+
+    // Compressible file: streamed with chunked transfer-encoding + zstd.
+    auto res2 = client.Get("/static/big.txt");
+    EXPECT_EQ(res2.status_code, 200);
+    EXPECT_FALSE(res2.GetHeader("Content-Encoding").empty());
+    EXPECT_EQ(res2.body.size(), text.size());
+    EXPECT_TRUE(res2.body == text);
+
+    // HEAD must complete without waiting for a body.
+    auto res3 = client.SendRequest("HEAD", "/static/big.bin");
+    EXPECT_EQ(res3.status_code, 200);
+    EXPECT_TRUE(res3.body.empty());
+  } catch (const std::exception &e) {
+    FAIL() << "QUIC static file request failed: " << e.what();
+  }
+  server.Stop();
+}
+
+// A real HTTP/3 request (HEADERS frame + FIN) must get exactly one HEADERS
+// frame followed by DATA frames covering the whole file, then FIN.
+TEST(HttpIntegrationTest, Http3FramedLargeFileResponse) {
+  TempStaticDir tmp;
+  std::string binary = MakePatternedData(400 * 1024, false);
+  tmp.Write("big.bin", binary);
+
+  cpphttp::HttpServerImpl<cpphttp::QuicServerTransport> server(0);
+  server.StaticDir("/static", tmp.dir.string());
+  server.Post("/echo", [](const cpphttp::HttpRequest &req) {
+    return cpphttp::HttpResponse::Plain("len=" +
+                                        std::to_string(req.body.size()));
+  });
+  server.Start();
+  uint16_t port = server.GetTransport()->GetServer().GetLocalPort();
+
+  cppquic::QuicClient client;
+  std::mutex mtx;
+  std::condition_variable cv;
+  std::unordered_map<uint64_t, std::vector<uint8_t>> received;
+  std::unordered_set<uint64_t> finished;
+  client.SetStreamDataHandler(
+      [&](uint64_t stream_id, const std::vector<uint8_t> &data, bool fin) {
+        std::lock_guard<std::mutex> lock(mtx);
+        auto &buf = received[stream_id];
+        buf.insert(buf.end(), data.begin(), data.end());
+        if (fin) finished.insert(stream_id);
+        cv.notify_all();
+      });
+  client.Start();
+  ASSERT_TRUE(client.Connect("127.0.0.1", port, 5000));
+
+  auto send_request = [&](const std::string &method, const std::string &path,
+                          const std::string &body) {
+    uint64_t sid = client.OpenStream(true);
+    std::vector<uint8_t> req = cpphttp::http3::EncodeFrame(
+        0x01, cpphttp::qpack::Encode({{":method", method},
+                                      {":scheme", "https"},
+                                      {":authority", "localhost"},
+                                      {":path", path}}));
+    if (!body.empty()) {
+      std::vector<uint8_t> b(body.begin(), body.end());
+      auto data_frame = cpphttp::http3::EncodeFrame(0x00, b);
+      req.insert(req.end(), data_frame.begin(), data_frame.end());
+    }
+    client.SendOnStream(sid, req, true);
+    return sid;
+  };
+
+  auto parse_response = [](const std::vector<uint8_t> &buf, int &headers_frames,
+                           std::string &status, std::string &body) {
+    size_t off = 0;
+    headers_frames = 0;
+    while (off < buf.size()) {
+      uint64_t type = 0, len = 0;
+      if (!cpphttp::http3::DecodeVarint(buf.data(), buf.size(), off, type) ||
+          !cpphttp::http3::DecodeVarint(buf.data(), buf.size(), off, len) ||
+          len > buf.size() - off) {
+        return false;
+      }
+      if (type == 0x01) {
+        ++headers_frames;
+        std::vector<std::pair<std::string, std::string>> h;
+        if (!cpphttp::qpack::Decode(buf.data() + off, len, h)) return false;
+        for (auto &p : h)
+          if (p.first == ":status") status = p.second;
+      } else if (type == 0x00) {
+        body.append(reinterpret_cast<const char *>(buf.data() + off), len);
+      }
+      off += len;
+    }
+    return true;
+  };
+
+  uint64_t file_sid = send_request("GET", "/static/big.bin", "");
+  uint64_t echo_sid = send_request("POST", "/echo", "hello body");
+  {
+    std::unique_lock<std::mutex> lock(mtx);
+    ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(10), [&] {
+      return finished.count(file_sid) && finished.count(echo_sid);
+    }));
+  }
+
+  int headers_frames = 0;
+  std::string status, body;
+  ASSERT_TRUE(parse_response(received[file_sid], headers_frames, status, body));
+  EXPECT_EQ(headers_frames, 1);
+  EXPECT_EQ(status, "200");
+  EXPECT_EQ(body.size(), binary.size());
+  EXPECT_TRUE(body == binary);
+
+  // POST without a content-length header: body must be framed by HTTP/3.
+  status.clear();
+  body.clear();
+  ASSERT_TRUE(parse_response(received[echo_sid], headers_frames, status, body));
+  EXPECT_EQ(status, "200");
+  EXPECT_EQ(body, "len=10");
+
+  client.Stop();
+  server.Stop();
+}
+
 TEST(HttpIntegrationTest, ConfigureQuicTransportAlpn) {
   cpphttp::HttpServerImpl<cpphttp::QuicServerTransport> server(0);
   EXPECT_NO_THROW(

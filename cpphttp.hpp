@@ -848,7 +848,17 @@ inline std::string ReconstructHttp11Request(
       throw std::invalid_argument("Invalid HTTP/3 header field");
     }
     if (p.first == "host" && !host.empty()) continue;
+    // HTTP/3 frames the body itself; the rebuilt request always carries an
+    // exact Content-Length, so drop any client-supplied framing headers.
+    if (p.first == "content-length" || p.first == "transfer-encoding" ||
+        p.first == "connection" || p.first == "keep-alive") {
+      continue;
+    }
     req += p.first + ": " + p.second + "\r\n";
+  }
+  if (!body.empty() || method == "POST" || method == "PUT" ||
+      method == "PATCH") {
+    req += "Content-Length: " + std::to_string(body.size()) + "\r\n";
   }
 
   req += "\r\n";
@@ -986,6 +996,8 @@ class TcpServerTransport {
   void SetMaxOutboundBufferSize(size_t size) {
     listener_->SetMaxOutboundBufferSize(size);
   }
+  // HTTP/1.1 body limits are enforced by the server core.
+  void SetMaxBodySize(size_t) {}
 
 #ifdef CPPHTTP_ENABLE_QUIC
   void SetQuicProfile(const cppquic::QuicProfile &profile) {}
@@ -1225,13 +1237,32 @@ class QuicServerTransport {
     size_t bytes_transferred;
   };
 
+  // Largest HEADERS / control / unknown frame payload buffered per stream.
+  static constexpr uint64_t kMaxH3FrameSize = 64 * 1024;
+
   QuicServerTransport(uint16_t port,
                       const std::string &bind_address = "0.0.0.0")
       : server_(port, bind_address) {
     server_.SetStreamDataHandler(
         [this](std::shared_ptr<cppquic::QuicConnection> conn,
                uint64_t stream_id, const std::vector<uint8_t> &data,
-               bool fin) { HandleQuicStreamData(conn, stream_id, data, fin); });
+               bool fin) {
+          // Never let an exception escape into the QUIC event worker: an
+          // uncaught exception there terminates the whole process.
+          try {
+            HandleQuicStreamData(conn, stream_id, data, fin);
+          } catch (const std::exception &e) {
+            internal::Log(LogSeverity::Warning, "QuicServer",
+                          std::string("Error handling stream data: ") +
+                              e.what() + ". Closing connection.");
+            conn->SetState(cppquic::ConnectionState::Closed);
+          } catch (...) {
+            internal::Log(LogSeverity::Warning, "QuicServer",
+                          "Unknown error handling stream data. Closing "
+                          "connection.");
+            conn->SetState(cppquic::ConnectionState::Closed);
+          }
+        });
   }
 
   void Start() {
@@ -1246,67 +1277,65 @@ class QuicServerTransport {
     key_to_id_.clear();
     id_to_key_.clear();
     id_to_conn_.clear();
+    responses_.clear();
+    h3_connections_.clear();
   }
 
   uint16_t GetLocalPort() const { return server_.GetLocalPort(); }
 
+  /**
+   * @brief Sends HTTP/1.1 response bytes for a session.
+   *
+   * The server core may deliver a response in several pieces (headers first,
+   * then file or stream chunks, possibly with chunked transfer-encoding). The
+   * bytes are parsed incrementally so that the QUIC stream receives exactly
+   * one HEADERS frame followed by DATA frames (HTTP/3), or the raw HTTP/1.1
+   * bytes (raw QUIC), and the stream FIN is only sent once the whole response
+   * body has been written.
+   */
   bool Send(uint64_t session_id, const std::string &data) {
     std::shared_ptr<cppquic::QuicConnection> conn;
+    std::shared_ptr<ResponseState> rs;
     uint64_t stream_id = 0;
     bool is_h3 = false;
     {
       std::lock_guard<std::mutex> lock(mapping_mutex_);
       auto it = id_to_key_.find(session_id);
       if (it == id_to_key_.end()) return false;
-      conn = id_to_conn_[session_id];
+      auto conn_it = id_to_conn_.find(session_id);
+      if (conn_it == id_to_conn_.end()) return false;
+      conn = conn_it->second;
       stream_id = it->second.stream_id;
 
-      auto conn_id = conn->GetLocalConnectionId();
-      auto conn_it = h3_connections_.find(conn_id);
-      if (conn_it != h3_connections_.end()) {
-        is_h3 = conn_it->second.is_http3;
+      auto h3_it = h3_connections_.find(it->second.conn_id);
+      if (h3_it != h3_connections_.end()) {
+        is_h3 = h3_it->second.is_http3;
       }
+      auto &slot = responses_[session_id];
+      if (!slot) slot = std::make_shared<ResponseState>();
+      rs = slot;
     }
     if (!conn) return false;
 
-    if (is_h3) {
-      std::vector<std::pair<std::string, std::string>> headers;
-      std::vector<uint8_t> body;
-      if (http3::ParseHttp11Response(data, headers, body)) {
-        // Strip connection-specific headers (RFC 9114, Section 4.1.2)
-        std::vector<std::pair<std::string, std::string>> clean_headers;
-        clean_headers.reserve(headers.size());
-        for (const auto &pair : headers) {
-          std::string lower_key = pair.first;
-          std::transform(lower_key.begin(), lower_key.end(), lower_key.begin(),
-                         [](unsigned char c) { return std::tolower(c); });
-          if (lower_key == "connection" || lower_key == "keep-alive" ||
-              lower_key == "proxy-connection" ||
-              lower_key == "transfer-encoding" || lower_key == "upgrade") {
-            continue;
-          }
-          clean_headers.push_back(pair);
-        }
-        std::vector<uint8_t> qpack_block = qpack::Encode(clean_headers);
-        std::vector<uint8_t> headers_frame =
-            http3::EncodeFrame(0x01, qpack_block);
-        std::vector<uint8_t> data_to_send = headers_frame;
-        if (!body.empty()) {
-          std::vector<uint8_t> data_frame = http3::EncodeFrame(0x00, body);
-          data_to_send.insert(data_to_send.end(), data_frame.begin(),
-                              data_frame.end());
-        }
-        server_.SendOnStream(conn, stream_id, data_to_send, true);
-      } else {
-        server_.SendOnStream(conn, stream_id, data);
+    bool finished = false;
+    {
+      std::lock_guard<std::mutex> rlock(rs->mtx);
+      if (rs->finished) return false;
+      std::vector<uint8_t> out;
+      bool fin = false;
+      ProcessResponseBytes(*rs, data, is_h3, out, fin);
+      if (!out.empty() || fin) {
+        server_.SendOnStream(conn, stream_id, out, fin);
       }
-    } else {
-      server_.SendOnStream(conn, stream_id, data, true);
+      finished = fin;
     }
 
     {
       std::lock_guard<std::mutex> lock(events_mutex_);
       transfer_events_.push_back({session_id, true, data.size()});
+    }
+    if (finished) {
+      FinishSession(session_id);
     }
     return true;
   }
@@ -1319,18 +1348,27 @@ class QuicServerTransport {
   void Disconnect(uint64_t session_id) {
     std::shared_ptr<cppquic::QuicConnection> conn;
     uint64_t stream_id = 0;
+    bool already_finished = false;
     {
       std::lock_guard<std::mutex> lock(mapping_mutex_);
       auto it = id_to_key_.find(session_id);
       if (it != id_to_key_.end()) {
-        conn = id_to_conn_[session_id];
+        auto conn_it = id_to_conn_.find(session_id);
+        if (conn_it != id_to_conn_.end()) conn = conn_it->second;
         stream_id = it->second.stream_id;
+        auto rs_it = responses_.find(session_id);
+        if (rs_it != responses_.end() && rs_it->second) {
+          std::lock_guard<std::mutex> rlock(rs_it->second->mtx);
+          already_finished = rs_it->second->finished;
+          rs_it->second->finished = true;
+        }
         key_to_id_.erase(it->second);
         id_to_conn_.erase(session_id);
         id_to_key_.erase(it);
+        responses_.erase(session_id);
       }
     }
-    if (conn) {
+    if (conn && !already_finished) {
       server_.SendOnStream(conn, stream_id, std::vector<uint8_t>{}, true);
     }
   }
@@ -1339,6 +1377,12 @@ class QuicServerTransport {
   void SetMaxOutboundBufferSize(size_t size) {
     max_outbound_buffer_size_ = size;
   }
+
+  /**
+   * @brief Maximum HTTP/3 request body buffered per request stream. Requests
+   * exceeding it cause the connection to be closed.
+   */
+  void SetMaxBodySize(size_t size) { max_body_size_ = size; }
 
   cpptcpnet::ConnectionProfile GetConnectionProfile(uint64_t session_id) const {
     cpptcpnet::ConnectionProfile profile;
@@ -1391,6 +1435,7 @@ class QuicServerTransport {
                 sessions_to_disconnect.push_back(it->first);
                 key_to_id_.erase(it->second);
                 id_to_conn_.erase(it->first);
+                responses_.erase(it->first);
                 it = id_to_key_.erase(it);
               } else {
                 ++it;
@@ -1437,8 +1482,8 @@ class QuicServerTransport {
  private:
   size_t send_chunk_size_ = 65536;
   size_t max_outbound_buffer_size_ = 1024 * 1024;
+  std::atomic<size_t> max_body_size_{10 * 1024 * 1024};
 
- private:
   struct SessionKey {
     cppquic::ConnectionId conn_id;
     uint64_t stream_id;
@@ -1452,6 +1497,224 @@ class QuicServerTransport {
              std::hash<uint64_t>{}(k.stream_id);
     }
   };
+
+  // Incremental state for translating an HTTP/1.1 response into one stream.
+  struct ResponseState {
+    std::mutex mtx;
+    std::string method = "GET";
+    bool headers_done = false;
+    bool finished = false;
+    enum class BodyMode { Length, Chunked, UntilEnd } mode = BodyMode::UntilEnd;
+    uint64_t remaining = 0;
+    std::string pending;
+  };
+
+  static void AppendBody(bool is_h3, const char *data, size_t len,
+                         std::vector<uint8_t> &out) {
+    if (len == 0) return;
+    if (is_h3) {
+      std::vector<uint8_t> payload(data, data + len);
+      std::vector<uint8_t> frame = http3::EncodeFrame(0x00, payload);
+      out.insert(out.end(), frame.begin(), frame.end());
+    } else {
+      out.insert(out.end(), data, data + len);
+    }
+  }
+
+  static void ProcessResponseBytes(ResponseState &rs, const std::string &data,
+                                   bool is_h3, std::vector<uint8_t> &out,
+                                   bool &fin) {
+    fin = false;
+    rs.pending.append(data);
+
+    if (!rs.headers_done) {
+      size_t end = rs.pending.find("\r\n\r\n");
+      if (end == std::string::npos) return;  // wait for the full header block
+      std::string head = rs.pending.substr(0, end + 4);
+      rs.pending.erase(0, end + 4);
+      rs.headers_done = true;
+
+      std::vector<std::pair<std::string, std::string>> headers;
+      std::vector<uint8_t> unused_body;
+      http3::ParseHttp11Response(head, headers, unused_body);
+
+      int status = 200;
+      bool chunked = false;
+      bool has_cl = false;
+      uint64_t content_length = 0;
+      for (const auto &p : headers) {
+        if (p.first == ":status") {
+          try {
+            status = std::stoi(p.second);
+          } catch (...) {
+            status = 500;
+          }
+        } else if (p.first == "transfer-encoding") {
+          std::string v = p.second;
+          for (auto &c : v) c = safe_lower(c);
+          if (v.find("chunked") != std::string::npos) chunked = true;
+        } else if (p.first == "content-length") {
+          try {
+            content_length = std::stoull(p.second);
+            has_cl = true;
+          } catch (...) {
+          }
+        }
+      }
+
+      if (is_h3) {
+        // Strip connection-specific headers (RFC 9114, Section 4.2).
+        std::vector<std::pair<std::string, std::string>> clean_headers;
+        clean_headers.reserve(headers.size());
+        for (const auto &pair : headers) {
+          const std::string &k = pair.first;
+          if (k == "connection" || k == "keep-alive" ||
+              k == "proxy-connection" || k == "transfer-encoding" ||
+              k == "upgrade") {
+            continue;
+          }
+          clean_headers.push_back(pair);
+        }
+        std::vector<uint8_t> frame =
+            http3::EncodeFrame(0x01, qpack::Encode(clean_headers));
+        out.insert(out.end(), frame.begin(), frame.end());
+      } else {
+        out.insert(out.end(), head.begin(), head.end());
+      }
+
+      bool no_body = rs.method == "HEAD" || (status >= 100 && status < 200) ||
+                     status == 204 || status == 304;
+      if (no_body) {
+        rs.pending.clear();
+        rs.finished = true;
+        fin = true;
+        return;
+      }
+      if (chunked) {
+        rs.mode = ResponseState::BodyMode::Chunked;
+      } else if (has_cl) {
+        rs.mode = ResponseState::BodyMode::Length;
+        rs.remaining = content_length;
+      } else {
+        rs.mode = ResponseState::BodyMode::UntilEnd;
+      }
+    }
+
+    switch (rs.mode) {
+      case ResponseState::BodyMode::Length: {
+        size_t n = static_cast<size_t>(
+            std::min<uint64_t>(rs.pending.size(), rs.remaining));
+        AppendBody(is_h3, rs.pending.data(), n, out);
+        rs.remaining -= n;
+        rs.pending.clear();  // bytes past Content-Length are dropped
+        if (rs.remaining == 0) {
+          rs.finished = true;
+          fin = true;
+        }
+        break;
+      }
+      case ResponseState::BodyMode::Chunked: {
+        size_t pos = 0;
+        while (true) {
+          size_t line_end = rs.pending.find("\r\n", pos);
+          if (line_end == std::string::npos) break;
+          std::string size_str = rs.pending.substr(pos, line_end - pos);
+          size_t semi = size_str.find(';');
+          if (semi != std::string::npos) size_str.resize(semi);
+          uint64_t chunk_size = 0;
+          try {
+            chunk_size = std::stoull(size_str, nullptr, 16);
+          } catch (...) {
+            internal::Log(LogSeverity::Warning, "QuicServer",
+                          "Malformed chunked response body; ending stream.");
+            rs.pending.clear();
+            rs.finished = true;
+            fin = true;
+            return;
+          }
+          size_t data_start = line_end + 2;
+          if (chunk_size == 0) {
+            // Last chunk: consume optional trailers up to the empty line.
+            size_t trailer_end;
+            if (rs.pending.compare(data_start, 2, "\r\n") == 0) {
+              trailer_end = data_start + 2;
+            } else {
+              size_t t = rs.pending.find("\r\n\r\n", data_start);
+              if (t == std::string::npos) break;
+              trailer_end = t + 4;
+            }
+            if (!is_h3) {
+              AppendBody(false, rs.pending.data() + pos, trailer_end - pos,
+                         out);
+            }
+            rs.pending.clear();
+            rs.finished = true;
+            fin = true;
+            return;
+          }
+          if (rs.pending.size() - data_start < chunk_size + 2) break;
+          if (is_h3) {
+            AppendBody(true, rs.pending.data() + data_start,
+                       static_cast<size_t>(chunk_size), out);
+          } else {
+            AppendBody(false, rs.pending.data() + pos,
+                       data_start + chunk_size + 2 - pos, out);
+          }
+          pos = data_start + static_cast<size_t>(chunk_size) + 2;
+        }
+        rs.pending.erase(0, pos);
+        break;
+      }
+      case ResponseState::BodyMode::UntilEnd:
+        AppendBody(is_h3, rs.pending.data(), rs.pending.size(), out);
+        rs.pending.clear();
+        rs.finished = true;
+        fin = true;
+        break;
+    }
+  }
+
+  static char safe_lower(char c) {
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+
+  // Called once a response has been fully written: the request stream is
+  // done, so release its mapping and tell the server core the session ended.
+  void FinishSession(uint64_t session_id) {
+    {
+      std::lock_guard<std::mutex> lock(mapping_mutex_);
+      auto it = id_to_key_.find(session_id);
+      if (it == id_to_key_.end()) return;
+      key_to_id_.erase(it->second);
+      id_to_conn_.erase(session_id);
+      id_to_key_.erase(it);
+      responses_.erase(session_id);
+    }
+    std::lock_guard<std::mutex> lock(events_mutex_);
+    connection_events_.push_back(
+        {session_id, cpptcpnet::ConnectionState::Disconnected});
+  }
+
+  // Registers a new session for a request stream and returns its id. Must be
+  // called with mapping_mutex_ held.
+  uint64_t RegisterSessionLocked(const SessionKey &key,
+                                 std::shared_ptr<cppquic::QuicConnection> conn,
+                                 const std::string &method, bool &is_new) {
+    auto it = key_to_id_.find(key);
+    if (it != key_to_id_.end()) {
+      is_new = false;
+      return it->second;
+    }
+    uint64_t session_id = next_session_id_++;
+    key_to_id_[key] = session_id;
+    id_to_key_[session_id] = key;
+    id_to_conn_[session_id] = std::move(conn);
+    auto rs = std::make_shared<ResponseState>();
+    rs->method = method;
+    responses_[session_id] = rs;
+    is_new = true;
+    return session_id;
+  }
 
   void HandleQuicStreamData(std::shared_ptr<cppquic::QuicConnection> conn,
                             uint64_t stream_id,
@@ -1499,6 +1762,7 @@ class QuicServerTransport {
       std::vector<uint8_t> h3_to_http11_data;
       bool h3_request_complete = false;
       bool violated = false;
+      std::string request_method = "GET";
 
       {
         std::lock_guard<std::mutex> lock(mapping_mutex_);
@@ -1515,7 +1779,8 @@ class QuicServerTransport {
 
           if ((stream_id & 0x02) != 0) {
             if (!stream_state.is_control && !stream_state.is_qpack_enc &&
-                !stream_state.is_qpack_dec && !stream_state.recv_buf.empty()) {
+                !stream_state.is_qpack_dec && !stream_state.is_ignored &&
+                !stream_state.recv_buf.empty()) {
               uint8_t type = stream_state.recv_buf.front();
               stream_state.recv_buf.erase(stream_state.recv_buf.begin());
               if (type == 0x00) {
@@ -1540,6 +1805,9 @@ class QuicServerTransport {
                   conn_state.client_qpack_dec_opened = true;
                   stream_state.is_qpack_dec = true;
                 }
+              } else {
+                // Unknown / reserved unidirectional stream type: ignore.
+                stream_state.is_ignored = true;
               }
             }
 
@@ -1564,13 +1832,14 @@ class QuicServerTransport {
                     }
                     conn_state.client_settings_received = true;
                   }
-                  if (type == 0x00 || type == 0x01) {
+                  if (type == 0x00 || type == 0x01 ||
+                      length > kMaxH3FrameSize) {
                     conn_state.protocol_violated = true;
                     violated = true;
                     break;
                   }
-                  if (offset + length <= stream_state.recv_buf.size()) {
-                    offset += length;
+                  if (length <= stream_state.recv_buf.size() - offset) {
+                    offset += static_cast<size_t>(length);
                   } else {
                     offset = frame_start;
                     break;
@@ -1586,6 +1855,8 @@ class QuicServerTransport {
                     stream_state.recv_buf.begin() + offset);
               }
             } else {
+              // QPACK encoder/decoder streams (no dynamic table in use) and
+              // ignored streams: discard their contents.
               stream_state.recv_buf.clear();
             }
           } else {
@@ -1604,16 +1875,37 @@ class QuicServerTransport {
                   violated = true;
                   break;
                 }
-                if (offset + length <= stream_state.recv_buf.size()) {
+                // Bound buffering before the frame is fully received.
+                if (type == 0x00) {
+                  if (length > max_body_size_.load() ||
+                      stream_state.body.size() >
+                          max_body_size_.load() - length) {
+                    internal::Log(LogSeverity::Warning, "QuicServer",
+                                  "HTTP/3 request body exceeds limit.");
+                    conn_state.protocol_violated = true;
+                    violated = true;
+                    break;
+                  }
+                } else if (length > kMaxH3FrameSize) {
+                  conn_state.protocol_violated = true;
+                  violated = true;
+                  break;
+                }
+                if (length <= stream_state.recv_buf.size() - offset) {
                   const uint8_t *payload =
                       stream_state.recv_buf.data() + offset;
                   if (type == 0x01) {
-                    qpack::Decode(payload, length, stream_state.headers);
+                    if (!qpack::Decode(payload, static_cast<size_t>(length),
+                                       stream_state.headers)) {
+                      conn_state.protocol_violated = true;
+                      violated = true;
+                      break;
+                    }
                   } else if (type == 0x00) {
                     stream_state.body.insert(stream_state.body.end(), payload,
                                              payload + length);
                   }
-                  offset += length;
+                  offset += static_cast<size_t>(length);
                 } else {
                   offset = frame_start;
                   break;
@@ -1630,10 +1922,20 @@ class QuicServerTransport {
             }
 
             if (fin && !conn_state.protocol_violated) {
-              std::string req_str = http3::ReconstructHttp11Request(
-                  stream_state.headers, stream_state.body);
-              h3_to_http11_data.assign(req_str.begin(), req_str.end());
-              h3_request_complete = true;
+              for (const auto &p : stream_state.headers) {
+                if (p.first == ":method") request_method = p.second;
+              }
+              try {
+                std::string req_str = http3::ReconstructHttp11Request(
+                    stream_state.headers, stream_state.body);
+                h3_to_http11_data.assign(req_str.begin(), req_str.end());
+                h3_request_complete = true;
+              } catch (const std::invalid_argument &) {
+                conn_state.protocol_violated = true;
+                violated = true;
+              }
+              // The request stream is complete; release its buffers.
+              conn_state.streams.erase(stream_id);
             }
           }
         }
@@ -1651,16 +1953,8 @@ class QuicServerTransport {
         {
           std::lock_guard<std::mutex> lock(mapping_mutex_);
           SessionKey key{conn->GetLocalConnectionId(), stream_id};
-          auto it = key_to_id_.find(key);
-          if (it == key_to_id_.end()) {
-            session_id = next_session_id_++;
-            key_to_id_[key] = session_id;
-            id_to_key_[session_id] = key;
-            id_to_conn_[session_id] = conn;
-            is_new = true;
-          } else {
-            session_id = it->second;
-          }
+          session_id =
+              RegisterSessionLocked(key, conn, request_method, is_new);
         }
 
         if (is_new) {
@@ -1677,19 +1971,16 @@ class QuicServerTransport {
       return;
     }
 
+    // Raw HTTP/1.1 over a QUIC stream.
     {
       std::lock_guard<std::mutex> lock(mapping_mutex_);
       SessionKey key{conn->GetLocalConnectionId(), stream_id};
-      auto it = key_to_id_.find(key);
-      if (it == key_to_id_.end()) {
-        session_id = next_session_id_++;
-        key_to_id_[key] = session_id;
-        id_to_key_[session_id] = key;
-        id_to_conn_[session_id] = conn;
-        is_new = true;
-      } else {
-        session_id = it->second;
+      std::string method = "GET";
+      if (key_to_id_.find(key) == key_to_id_.end()) {
+        auto sp = std::find(data.begin(), data.end(), ' ');
+        if (sp != data.end()) method.assign(data.begin(), sp);
       }
+      session_id = RegisterSessionLocked(key, conn, method, is_new);
     }
 
     if (is_new) {
@@ -1701,12 +1992,8 @@ class QuicServerTransport {
     if (data_handler_ && !data.empty()) {
       data_handler_(session_id, data);
     }
-
-    if (fin) {
-      std::lock_guard<std::mutex> lock(events_mutex_);
-      connection_events_.push_back(
-          {session_id, cpptcpnet::ConnectionState::Disconnected});
-    }
+    // The session is released once the response has been fully sent (see
+    // FinishSession) or when the QUIC connection closes.
   }
 
   struct Http3StreamState {
@@ -1715,6 +2002,7 @@ class QuicServerTransport {
     bool is_control = false;
     bool is_qpack_enc = false;
     bool is_qpack_dec = false;
+    bool is_ignored = false;
     std::vector<std::pair<std::string, std::string>> headers;
     std::vector<uint8_t> body;
   };
@@ -1744,6 +2032,7 @@ class QuicServerTransport {
   std::unordered_map<uint64_t, SessionKey> id_to_key_;
   mutable std::unordered_map<uint64_t, std::shared_ptr<cppquic::QuicConnection>>
       id_to_conn_;
+  std::unordered_map<uint64_t, std::shared_ptr<ResponseState>> responses_;
   uint64_t next_session_id_ = 1;
 
   mutable std::mutex events_mutex_;
@@ -1754,86 +2043,125 @@ class QuicServerTransport {
 // QUIC client transport wrapper
 class QuicClientTransport {
  public:
+  // Largest non-DATA frame and DATA frame payloads buffered from the server.
+  static constexpr uint64_t kMaxH3FrameSize = 64 * 1024;
+  static constexpr uint64_t kMaxH3DataFrameSize = 16 * 1024 * 1024;
+
   QuicClientTransport() {
     client_.SetStreamDataHandler(
         [this](uint64_t stream_id, const std::vector<uint8_t> &data, bool fin) {
-          if (stream_id != active_stream_id_) return;
+          // Parse under the lock, but invoke user callbacks after releasing
+          // it so they may call back into this transport.
+          std::vector<std::vector<uint8_t>> deliveries;
+          std::function<void(uint64_t, const std::vector<uint8_t> &)> on_data;
+          std::function<void()> on_disconnect;
+          bool protocol_error = false;
+          {
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (stream_id != active_stream_id_) return;
+            on_data = data_handler_;
 
-          recv_buf_.insert(recv_buf_.end(), data.begin(), data.end());
-          size_t offset = 0;
-          while (offset < recv_buf_.size()) {
-            size_t frame_start = offset;
-            uint64_t type = 0, length = 0;
-            if (http3::DecodeVarint(recv_buf_.data(), recv_buf_.size(), offset,
-                                    type) &&
-                http3::DecodeVarint(recv_buf_.data(), recv_buf_.size(), offset,
-                                    length)) {
-              if (type == 0x00 || type == 0x01) {
-                is_h3_ = true;
-                if (offset + length <= recv_buf_.size()) {
-                  const uint8_t *payload = recv_buf_.data() + offset;
-                  if (type == 0x01) {
-                    qpack::Decode(payload, length, resp_headers_);
-                    std::string status = "200";
-                    for (const auto &p : resp_headers_) {
-                      if (p.first == ":status") status = p.second;
-                    }
-                    std::string header_str = "HTTP/1.1 " + status + " OK\r\n";
-                    for (const auto &p : resp_headers_) {
-                      if (p.first[0] == ':') continue;
-                      header_str += p.first + ": " + p.second + "\r\n";
-                    }
-                    header_str += "\r\n";
-                    std::vector<uint8_t> h_vec(header_str.begin(),
-                                               header_str.end());
-                    if (data_handler_) data_handler_(1, h_vec);
-                    headers_sent_ = true;
-                  } else if (type == 0x00) {
-                    std::vector<uint8_t> d_vec(payload, payload + length);
-                    if (data_handler_) data_handler_(1, d_vec);
-                  }
-                  offset += length;
-                } else {
-                  offset = frame_start;
-                  break;
-                }
-              } else {
+            // Decide once per request stream whether the server answers with
+            // HTTP/3 frames (first frame is HEADERS, type 0x01) or raw
+            // HTTP/1.1 bytes. Re-guessing per packet would misread binary
+            // body bytes as frames.
+            if (!mode_decided_ && !data.empty()) {
+              is_h3_ = (data[0] == 0x01);
+              mode_decided_ = true;
+            }
+
+            recv_buf_.insert(recv_buf_.end(), data.begin(), data.end());
+            size_t offset = 0;
+            while (is_h3_ && offset < recv_buf_.size()) {
+              size_t frame_start = offset;
+              uint64_t type = 0, length = 0;
+              if (!http3::DecodeVarint(recv_buf_.data(), recv_buf_.size(),
+                                       offset, type) ||
+                  !http3::DecodeVarint(recv_buf_.data(), recv_buf_.size(),
+                                       offset, length)) {
                 offset = frame_start;
                 break;
               }
-            } else {
-              offset = frame_start;
-              break;
+              if (length > (type == 0x00 ? kMaxH3DataFrameSize
+                                         : kMaxH3FrameSize)) {
+                protocol_error = true;
+                break;
+              }
+              if (length > recv_buf_.size() - offset) {
+                offset = frame_start;
+                break;
+              }
+              const uint8_t *payload = recv_buf_.data() + offset;
+              if (type == 0x01) {
+                resp_headers_.clear();
+                if (!qpack::Decode(payload, static_cast<size_t>(length),
+                                   resp_headers_)) {
+                  protocol_error = true;
+                  break;
+                }
+                if (!headers_sent_) {
+                  std::string status = "200";
+                  for (const auto &p : resp_headers_) {
+                    if (p.first == ":status") status = p.second;
+                  }
+                  if (!http3::IsHttpToken(status)) {
+                    protocol_error = true;
+                    break;
+                  }
+                  std::string header_str = "HTTP/1.1 " + status + " OK\r\n";
+                  for (const auto &p : resp_headers_) {
+                    if (!p.first.empty() && p.first[0] == ':') continue;
+                    // Drop fields that could corrupt the HTTP/1.1 framing.
+                    if (!http3::IsHttpToken(p.first) ||
+                        !http3::IsHttpFieldValue(p.second)) {
+                      continue;
+                    }
+                    header_str += p.first + ": " + p.second + "\r\n";
+                  }
+                  header_str += "\r\n";
+                  deliveries.emplace_back(header_str.begin(), header_str.end());
+                  headers_sent_ = true;
+                }
+                // A second HEADERS frame carries trailers; they are ignored.
+              } else if (type == 0x00) {
+                deliveries.emplace_back(payload, payload + length);
+              }
+              // Unknown/reserved frame types are skipped (RFC 9114 Section 9).
+              offset += static_cast<size_t>(length);
             }
-          }
-          if (offset > 0) {
-            recv_buf_.erase(recv_buf_.begin(), recv_buf_.begin() + offset);
+            if (offset > 0 && !protocol_error) {
+              recv_buf_.erase(recv_buf_.begin(), recv_buf_.begin() + offset);
+            }
+
+            if (!is_h3_ && !protocol_error) {
+              if (!data.empty()) deliveries.push_back(data);
+              recv_buf_.clear();
+            }
+
+            if (fin || protocol_error) {
+              stream_finished_ = true;
+              is_h3_ = false;
+              mode_decided_ = false;
+              headers_sent_ = false;
+              resp_headers_.clear();
+              recv_buf_.clear();
+              on_disconnect = disconnect_handler_;
+            }
           }
 
-          if (!is_h3_) {
-            if (data_handler_ && !data.empty()) {
-              data_handler_(1, data);
-            }
-            recv_buf_.clear();
+          if (on_data) {
+            for (const auto &d : deliveries) on_data(1, d);
           }
-
-          if (fin) {
-            stream_finished_ = true;
-            is_h3_ = false;
-            headers_sent_ = false;
-            resp_headers_.clear();
-            recv_buf_.clear();
-            if (disconnect_handler_) {
-              disconnect_handler_();
-            }
-          }
+          if (on_disconnect) on_disconnect();
         });
 
     client_.SetErrorHandler([this](int code, const std::string &msg) {
-      std::lock_guard<std::mutex> lock(mtx_);
-      if (disconnect_handler_) {
-        disconnect_handler_();
+      std::function<void()> on_disconnect;
+      {
+        std::lock_guard<std::mutex> lock(mtx_);
+        on_disconnect = disconnect_handler_;
       }
+      if (on_disconnect) on_disconnect();
     });
   }
 
@@ -1853,13 +2181,13 @@ class QuicClientTransport {
 
   bool Send(uint64_t session_id, const std::string &data) {
     std::lock_guard<std::mutex> lock(mtx_);
-    client_.SendOnStream(active_stream_id_, data, true);
+    client_.SendOnStream(active_stream_id_, data, false);
     return true;
   }
 
   bool Send(uint64_t session_id, const std::vector<uint8_t> &data) {
     std::lock_guard<std::mutex> lock(mtx_);
-    client_.SendOnStream(active_stream_id_, data, true);
+    client_.SendOnStream(active_stream_id_, data, false);
     return true;
   }
 
@@ -1880,6 +2208,7 @@ class QuicClientTransport {
     active_stream_id_ = client_.OpenStream(true);
     stream_finished_ = false;
     is_h3_ = false;
+    mode_decided_ = false;
     headers_sent_ = false;
     resp_headers_.clear();
     recv_buf_.clear();
@@ -1924,6 +2253,7 @@ class QuicClientTransport {
   uint64_t active_stream_id_ = 0;
   bool stream_finished_ = false;
   bool is_h3_ = false;
+  bool mode_decided_ = false;
   bool headers_sent_ = false;
   std::function<void(uint64_t session_id, const std::vector<uint8_t> &data)>
       data_handler_;
@@ -2116,6 +2446,11 @@ class HybridServerTransport {
   void SetMaxOutboundBufferSize(size_t size) {
     tcp_transport_.SetMaxOutboundBufferSize(size);
     quic_transport_.SetMaxOutboundBufferSize(size);
+  }
+
+  void SetMaxBodySize(size_t size) {
+    tcp_transport_.SetMaxBodySize(size);
+    quic_transport_.SetMaxBodySize(size);
   }
 
   void SetQuicProfile(const cppquic::QuicProfile &profile) {
@@ -4343,7 +4678,12 @@ class HttpServerImpl {
   void SetMaxHeaderSize(size_t size) { max_header_size_ = size; }
   size_t GetMaxHeaderSize() const { return max_header_size_; }
 
-  void SetMaxBodySize(size_t size) { max_body_size_ = size; }
+  void SetMaxBodySize(size_t size) {
+    max_body_size_ = size;
+    if (transport_) {
+      transport_->SetMaxBodySize(size);
+    }
+  }
   size_t GetMaxBodySize() const { return max_body_size_; }
 
   void SetSendChunkSize(size_t size) {
