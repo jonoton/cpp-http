@@ -3486,6 +3486,32 @@ TEST(ResponseCacheTest, BasicCaching) {
   server.Stop();
 }
 
+TEST(HttpClientTest, SkipsInterimResponses) {
+  // Fake server that answers every request with "103 Early Hints" followed
+  // by the real response.
+  cpptcpnet::TcpListener listener(8169, "127.0.0.1");
+  std::atomic<int> requests{0};
+  listener.SetDataHandler(
+      [&](uint64_t sid, const std::vector<uint8_t> &data) {
+        std::string s(data.begin(), data.end());
+        if (s.find("\r\n\r\n") == std::string::npos) return;
+        int n = ++requests;
+        listener.Send(sid, "HTTP/1.1 103 Early Hints\r\nLink: </a.css>\r\n\r\n"
+                           "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nr" +
+                               std::to_string(n));
+      });
+  listener.Start();
+
+  cpphttp::HttpClient client("127.0.0.1", 8169);
+  auto r1 = client.Get("/one");
+  EXPECT_EQ(r1.status_code, 200);
+  EXPECT_EQ(r1.body, "r1");
+  auto r2 = client.Get("/two");
+  EXPECT_EQ(r2.status_code, 200);
+  EXPECT_EQ(r2.body, "r2");
+  listener.Stop();
+}
+
 TEST(ResponseCacheTest, KeysBypassAndBounds) {
   cpphttp::ResponseCache cache(std::chrono::seconds(60), 2);
   int calls = 0;

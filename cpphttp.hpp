@@ -2447,31 +2447,27 @@ class HybridServerTransport {
   }
 
   std::optional<TransferEvent> TryReceiveTransferEvent() {
-    if (auto ev = tcp_transport_.TryReceiveTransferEvent()) {
-      uint64_t unified_id = GetOrCreateUnifiedSessionId(false, ev->session_id);
-      return TransferEvent{unified_id, ev->is_send, ev->bytes_transferred};
+    // Transfer events never create mappings: a late event for a session that
+    // has already disconnected would otherwise leak a mapping forever.
+    while (auto ev = tcp_transport_.TryReceiveTransferEvent()) {
+      if (auto id = FindUnifiedSessionId(false, ev->session_id)) {
+        return TransferEvent{*id, ev->is_send, ev->bytes_transferred};
+      }
     }
-    if (auto ev = quic_transport_.TryReceiveTransferEvent()) {
-      uint64_t unified_id = GetOrCreateUnifiedSessionId(true, ev->session_id);
-      return TransferEvent{unified_id, ev->is_send, ev->bytes_transferred};
+    while (auto ev = quic_transport_.TryReceiveTransferEvent()) {
+      if (auto id = FindUnifiedSessionId(true, ev->session_id)) {
+        return TransferEvent{*id, ev->is_send, ev->bytes_transferred};
+      }
     }
     return std::nullopt;
   }
 
   std::optional<ConnectionEvent> TryReceiveConnectionEvent() {
     if (auto ev = tcp_transport_.TryReceiveConnectionEvent()) {
-      uint64_t unified_id = GetOrCreateUnifiedSessionId(false, ev->session_id);
-      if (ev->state == cpptcpnet::ConnectionState::Disconnected) {
-        RemoveSessionMapping(unified_id);
-      }
-      return ConnectionEvent{unified_id, ev->state};
+      return TranslateConnectionEvent(false, *ev);
     }
     if (auto ev = quic_transport_.TryReceiveConnectionEvent()) {
-      uint64_t unified_id = GetOrCreateUnifiedSessionId(true, ev->session_id);
-      if (ev->state == cpptcpnet::ConnectionState::Disconnected) {
-        RemoveSessionMapping(unified_id);
-      }
-      return ConnectionEvent{unified_id, ev->state};
+      return TranslateConnectionEvent(true, *ev);
     }
     return std::nullopt;
   }
@@ -2542,6 +2538,33 @@ class HybridServerTransport {
     transport_to_unified_[key] = unified_id;
     unified_to_transport_[unified_id] = key;
     return unified_id;
+  }
+
+  std::optional<uint64_t> FindUnifiedSessionId(
+      bool is_quic, uint64_t transport_session_id) const {
+    std::lock_guard<std::mutex> lock(session_map_mutex_);
+    auto it = transport_to_unified_.find(SessionKey{is_quic, transport_session_id});
+    if (it == transport_to_unified_.end()) return std::nullopt;
+    return it->second;
+  }
+
+  template <typename Event>
+  std::optional<ConnectionEvent> TranslateConnectionEvent(bool is_quic,
+                                                          const Event &ev) {
+    if (ev.state == cpptcpnet::ConnectionState::Disconnected) {
+      auto id = FindUnifiedSessionId(is_quic, ev.session_id);
+      if (!id) {
+        // Never seen (no data arrived): report it under a fresh id without
+        // keeping a mapping around.
+        uint64_t fresh = GetOrCreateUnifiedSessionId(is_quic, ev.session_id);
+        RemoveSessionMapping(fresh);
+        return ConnectionEvent{fresh, ev.state};
+      }
+      RemoveSessionMapping(*id);
+      return ConnectionEvent{*id, ev.state};
+    }
+    return ConnectionEvent{GetOrCreateUnifiedSessionId(is_quic, ev.session_id),
+                           ev.state};
   }
 
   std::optional<SessionKey> GetTransportSession(
@@ -6682,19 +6705,31 @@ class HttpClientImpl {
     auto check_response = [&]() {
       if (response_ready) return true;
 
-      if (!header_parsed) {
+      while (!header_parsed) {
         const std::string terminator = "\r\n\r\n";
         auto it = std::search(buffer_.begin(), buffer_.end(),
                               terminator.begin(), terminator.end());
-        if (it != buffer_.end()) {
-          size_t header_end_idx = std::distance(buffer_.begin(), it);
-          body_start_idx = header_end_idx + 4;
+        if (it == buffer_.end()) break;
+        size_t header_end_idx = std::distance(buffer_.begin(), it);
+        body_start_idx = header_end_idx + 4;
 
-          std::string raw_header(buffer_.begin(),
-                                 buffer_.begin() + header_end_idx);
-          req = ParseClientHeader(raw_header);
-          header_parsed = true;
+        std::string raw_header(buffer_.begin(),
+                               buffer_.begin() + header_end_idx);
+        req = ParseClientHeader(raw_header);
+        int interim_status = 0;
+        try {
+          interim_status = std::stoi(req.status_code_str);
+        } catch (...) {
         }
+        if (interim_status >= 100 && interim_status < 200 &&
+            interim_status != 101) {
+          // Interim response (e.g. 100 Continue, 103 Early Hints): discard it
+          // and keep waiting for the final response.
+          buffer_.erase(buffer_.begin(), buffer_.begin() + body_start_idx);
+          body_start_idx = 0;
+          continue;
+        }
+        header_parsed = true;
       }
 
       if (header_parsed) {
