@@ -63,6 +63,20 @@ using LogCallback =
     std::function<void(LogSeverity severity, const std::string &className,
                        const std::string &message)>;
 
+/**
+ * @brief Client TLS verification and certificate settings.
+ * Peer certificate and hostname verification are enabled by default.
+ */
+struct ClientTlsConfig {
+  bool verify_peer = true;
+  std::string ca_file;
+  std::string ca_path;
+  std::string server_name;
+  std::string client_cert_file;
+  std::string client_key_file;
+  std::string cipher_list;
+};
+
 namespace internal {
 inline std::mutex &GetLoggerMutex() {
   static std::mutex mtx;
@@ -1108,6 +1122,12 @@ class TcpClientTransport {
   ~TcpClientTransport() { Stop(); }
 
   void EnableSSL() { ssl_enabled_ = true; }
+  void EnableSSL(const ClientTlsConfig &config) {
+    ssl_enabled_ = true;
+    tls_config_ = config;
+  }
+  void SetTlsConfig(const ClientTlsConfig &config) { tls_config_ = config; }
+  const ClientTlsConfig &GetTlsConfig() const { return tls_config_; }
   void Start() {}
 
   /**
@@ -1136,7 +1156,19 @@ class TcpClientTransport {
 
     auto client = std::make_unique<cpptcpnet::TcpClient>();
     if (ssl_enabled_) {
+#ifdef CPPTCPNET_SSL_SUPPORT
+      cpptcpnet::TcpClient::SslClientConfig ssl_cfg;
+      ssl_cfg.verify_peer = tls_config_.verify_peer;
+      ssl_cfg.ca_file = tls_config_.ca_file;
+      ssl_cfg.ca_path = tls_config_.ca_path;
+      ssl_cfg.server_name = tls_config_.server_name;
+      ssl_cfg.client_cert_file = tls_config_.client_cert_file;
+      ssl_cfg.client_key_file = tls_config_.client_key_file;
+      ssl_cfg.cipher_list = tls_config_.cipher_list;
+      client->EnableSSL(ssl_cfg);
+#else
       client->EnableSSL();
+#endif
     }
     client->SetDataHandler(
         [this](uint64_t session_id, const std::vector<uint8_t> &data) {
@@ -1279,6 +1311,7 @@ class TcpClientTransport {
   std::shared_ptr<cpppubsub::Subscriber<cpptcpnet::ConnectionEvent>> state_sub_;
   uint64_t session_id_ = 0;
   bool ssl_enabled_ = false;
+  ClientTlsConfig tls_config_;
   std::function<void(uint64_t, const std::vector<uint8_t> &)> data_handler_;
   std::function<void()> disconnect_handler_;
   std::mutex mtx_;
@@ -2229,6 +2262,23 @@ class QuicClientTransport {
   }
 
   void EnableSSL() {}
+  void EnableSSL(const ClientTlsConfig &config) { SetTlsConfig(config); }
+  void SetTlsConfig(const ClientTlsConfig &config) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    tls_config_ = config;
+    cppquic::ClientTlsConfig qcfg;
+    qcfg.verify_peer = config.verify_peer;
+    qcfg.ca_file = config.ca_file;
+    qcfg.ca_path = config.ca_path;
+    qcfg.server_name = config.server_name;
+    client_.SetTlsConfig(qcfg);
+    if (!config.client_cert_file.empty() &&
+        !config.client_key_file.empty()) {
+      client_.SetCertificate(config.client_cert_file,
+                             config.client_key_file);
+    }
+  }
+  const ClientTlsConfig &GetTlsConfig() const { return tls_config_; }
   void Start() {}
   void Stop() { client_.Stop(); }
 
@@ -2311,6 +2361,7 @@ class QuicClientTransport {
 
  private:
   cppquic::QuicClient client_;
+  ClientTlsConfig tls_config_;
   size_t send_chunk_size_ = 65536;
   size_t max_outbound_buffer_size_ = 1024 * 1024;
   uint64_t active_stream_id_ = 0;
@@ -6295,6 +6346,20 @@ class HttpClientImpl {
   }
 
   void EnableSSL() { ssl_enabled_ = true; }
+  void EnableSSL(const ClientTlsConfig &config) {
+    ssl_enabled_ = true;
+    tls_config_ = config;
+    client_.SetTlsConfig(tls_config_);
+  }
+  void SetTlsConfig(const ClientTlsConfig &config) {
+    tls_config_ = config;
+    client_.SetTlsConfig(tls_config_);
+  }
+  const ClientTlsConfig &GetTlsConfig() const { return tls_config_; }
+  void SetAllowSelfSigned(bool allow) {
+    tls_config_.verify_peer = !allow;
+    client_.SetTlsConfig(tls_config_);
+  }
 
   void SetTimeout(std::chrono::milliseconds timeout) { timeout_ = timeout; }
   std::chrono::milliseconds GetTimeout() const { return timeout_; }
@@ -6598,6 +6663,7 @@ class HttpClientImpl {
   std::string host_;
   uint16_t port_;
   bool ssl_enabled_ = false;
+  ClientTlsConfig tls_config_;
   std::chrono::milliseconds timeout_{10000};
   size_t max_body_size_ = 10 * 1024 * 1024;
   size_t max_header_size_ = 8192;
@@ -6631,6 +6697,7 @@ class HttpClientImpl {
 
     CleanUpConnection();
 
+    client_.SetTlsConfig(tls_config_);
     if (ssl_enabled_) {
       client_.EnableSSL();
     }
@@ -7191,6 +7258,11 @@ class HttpClientImpl {
               }
             } else {
               HttpClientImpl<Transport> new_client(r_host, r_port);
+              ClientTlsConfig redirect_tls = tls_config_;
+              redirect_tls.server_name.clear();
+              redirect_tls.client_cert_file.clear();
+              redirect_tls.client_key_file.clear();
+              new_client.SetTlsConfig(redirect_tls);
               if (r_proto == "https") {
                 new_client.EnableSSL();
               }
@@ -7331,6 +7403,11 @@ class HttpClientImpl {
                                          headers, redirect_depth + 1, on_chunk);
             } else {
               HttpClientImpl<Transport> new_client(r_host, r_port);
+              ClientTlsConfig redirect_tls = tls_config_;
+              redirect_tls.server_name.clear();
+              redirect_tls.client_cert_file.clear();
+              redirect_tls.client_key_file.clear();
+              new_client.SetTlsConfig(redirect_tls);
               if (r_proto == "https") {
                 new_client.EnableSSL();
               }
@@ -7439,6 +7516,10 @@ class WebSocketClient {
   }
   std::chrono::milliseconds GetCloseTimeout() const { return close_timeout_; }
 
+  void SetTlsConfig(const ClientTlsConfig &config) { tls_config_ = config; }
+  const ClientTlsConfig &GetTlsConfig() const { return tls_config_; }
+  void SetAllowSelfSigned(bool allow) { tls_config_.verify_peer = !allow; }
+
   bool Connect(const std::string &url,
                std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
     std::string protocol, host, path;
@@ -7458,9 +7539,19 @@ class WebSocketClient {
       client_->SetMaxOutboundBufferSize(max_outbound_buffer_size_);
     }
     if (ssl_enabled_) {
+#ifdef CPPTCPNET_SSL_SUPPORT
       cpptcpnet::TcpClient::SslClientConfig ssl_cfg;
-      ssl_cfg.verify_peer = false;
+      ssl_cfg.verify_peer = tls_config_.verify_peer;
+      ssl_cfg.ca_file = tls_config_.ca_file;
+      ssl_cfg.ca_path = tls_config_.ca_path;
+      ssl_cfg.server_name = tls_config_.server_name;
+      ssl_cfg.client_cert_file = tls_config_.client_cert_file;
+      ssl_cfg.client_key_file = tls_config_.client_key_file;
+      ssl_cfg.cipher_list = tls_config_.cipher_list;
       client_->EnableSSL(ssl_cfg);
+#else
+      client_->EnableSSL();
+#endif
     }
 
     buffer_.clear();
@@ -7931,6 +8022,7 @@ class WebSocketClient {
   std::mutex mtx_;
   std::condition_variable cv_;
   bool ssl_enabled_ = false;
+  ClientTlsConfig tls_config_;
   size_t max_body_size_ = 10 * 1024 * 1024;
   size_t max_outbound_buffer_size_ = 10 * 1024 * 1024;
   std::chrono::milliseconds close_timeout_{1000};

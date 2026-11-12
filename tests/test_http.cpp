@@ -667,7 +667,9 @@ TEST(WebSocketIntegrationTest, SecureEcho) {
 
   // Setup Client
   cpptcpnet::TcpClient client;
-  ASSERT_NO_THROW(client.EnableSSL());  // defaults to verify_peer = false
+  cpptcpnet::TcpClient::SslClientConfig client_ssl_config;
+  client_ssl_config.ca_file = CPPHTTP_CERTS_DIR "/server.crt";
+  ASSERT_NO_THROW(client.EnableSSL(client_ssl_config));
 
   auto session = std::make_shared<TestClientSession>();
 
@@ -2753,6 +2755,9 @@ TEST(WebSocketIntegrationTest, WebSocketClientSecureEcho) {
   server.Start();
 
   cpphttp::WebSocketClient client;
+  cpphttp::ClientTlsConfig tls_cfg;
+  tls_cfg.ca_file = CPPHTTP_CERTS_DIR "/server.crt";
+  client.SetTlsConfig(tls_cfg);
   std::mutex ws_mtx;
   std::condition_variable ws_cv;
   std::string received_msg;
@@ -4051,6 +4056,7 @@ TEST(HttpIntegrationTest, HttpOverQuic) {
 
   cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
                                                                port);
+  client.SetAllowSelfSigned(true);
   client.SetTimeout(std::chrono::seconds(5));
 
   try {
@@ -4119,6 +4125,7 @@ TEST(HttpIntegrationTest, HybridServer) {
   {
     cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
                                                                  port);
+    client.SetAllowSelfSigned(true);
     client.SetTimeout(std::chrono::seconds(5));
     try {
       auto res = client.Get("/hello");
@@ -4341,6 +4348,7 @@ TEST(HttpIntegrationTest, QuicServesLargeStaticFile) {
 
   cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
                                                                port);
+  client.SetAllowSelfSigned(true);
   client.SetTimeout(std::chrono::seconds(10));
   try {
     auto res = client.Get("/static/big.bin");
@@ -4382,6 +4390,7 @@ TEST(HttpIntegrationTest, Http3FramedLargeFileResponse) {
   uint16_t port = server.GetTransport()->GetServer().GetLocalPort();
 
   cppquic::QuicClient client;
+  client.SetAllowSelfSigned(true);
   std::mutex mtx;
   std::condition_variable cv;
   std::unordered_map<uint64_t, std::vector<uint8_t>> received;
@@ -4476,5 +4485,128 @@ TEST(HttpIntegrationTest, ConfigureQuicTransportAlpn) {
                                                                8080);
   EXPECT_NO_THROW(
       client.GetTransport().GetClient().SetAlpnProtos({"h3", "h3-29"}));
+}
+
+TEST(HttpIntegrationTest, QuicTlsVerification) {
+  cpphttp::HttpServerImpl<cpphttp::QuicServerTransport> server(0);
+  server.GetTransport()->GetServer().SetCertificate(
+      CPPHTTP_CERTS_DIR "/server.crt", CPPHTTP_CERTS_DIR "/server.key");
+  server.Get("/ok", [](const cpphttp::HttpRequest &) {
+    return cpphttp::HttpResponse::Plain("verified");
+  });
+  server.Start();
+  uint16_t port = server.GetTransport()->GetServer().GetLocalPort();
+
+  // Untrusted self-signed cert must be rejected by default.
+  {
+    cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
+                                                                 port);
+    client.SetTimeout(std::chrono::milliseconds(1500));
+    EXPECT_THROW(client.Get("/ok"), std::runtime_error);
+  }
+
+  // Trusting the server CA cert succeeds and verifies the IP SAN.
+  {
+    cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
+                                                                 port);
+    cpphttp::ClientTlsConfig tls_cfg;
+    tls_cfg.ca_file = CPPHTTP_CERTS_DIR "/server.crt";
+    client.SetTlsConfig(tls_cfg);
+    client.SetTimeout(std::chrono::seconds(5));
+    auto res = client.Get("/ok");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body, "verified");
+  }
+
+  // Mismatched server_name must fail hostname verification even with trusted CA.
+  {
+    cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1",
+                                                                 port);
+    cpphttp::ClientTlsConfig tls_cfg;
+    tls_cfg.ca_file = CPPHTTP_CERTS_DIR "/server.crt";
+    tls_cfg.server_name = "wrong.example.com";
+    client.SetTlsConfig(tls_cfg);
+    client.SetTimeout(std::chrono::milliseconds(1500));
+    EXPECT_THROW(client.Get("/ok"), std::runtime_error);
+  }
+
+  server.Stop();
+}
+#endif
+
+#if defined(CPPTCPNET_SSL_SUPPORT)
+TEST(HttpClientTlsTest, HttpsVerifiesPeerAndHostnameByDefault) {
+  uint16_t port = 8170;
+  cpphttp::HttpServer server(port);
+  cpptcpnet::TcpListener::SslConfig ssl_config;
+  ssl_config.cert_file = CPPHTTP_CERTS_DIR "/server.crt";
+  ssl_config.key_file = CPPHTTP_CERTS_DIR "/server.key";
+  ASSERT_NO_THROW(server.GetListener().EnableSSL(ssl_config));
+  server.Get("/ok", [](const cpphttp::HttpRequest &) {
+    return cpphttp::HttpResponse::Plain("https ok");
+  });
+  server.Start();
+
+  // Untrusted self-signed cert must fail by default.
+  {
+    cpphttp::HttpClient client("127.0.0.1", port);
+    client.EnableSSL();
+    client.SetTimeout(std::chrono::milliseconds(1500));
+    EXPECT_THROW(client.Get("/ok"), std::runtime_error);
+  }
+
+  // Trusting the CA succeeds.
+  {
+    cpphttp::HttpClient client("127.0.0.1", port);
+    cpphttp::ClientTlsConfig tls_cfg;
+    tls_cfg.ca_file = CPPHTTP_CERTS_DIR "/server.crt";
+    client.EnableSSL(tls_cfg);
+    client.SetTimeout(std::chrono::seconds(5));
+    auto res = client.Get("/ok");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body, "https ok");
+  }
+
+  // Wrong server_name fails hostname check.
+  {
+    cpphttp::HttpClient client("127.0.0.1", port);
+    cpphttp::ClientTlsConfig tls_cfg;
+    tls_cfg.ca_file = CPPHTTP_CERTS_DIR "/server.crt";
+    tls_cfg.server_name = "wrong.example.com";
+    client.EnableSSL(tls_cfg);
+    client.SetTimeout(std::chrono::milliseconds(1500));
+    EXPECT_THROW(client.Get("/ok"), std::runtime_error);
+  }
+
+  // Explicit opt-out allows self-signed certs.
+  {
+    cpphttp::HttpClient client("127.0.0.1", port);
+    client.EnableSSL();
+    client.SetAllowSelfSigned(true);
+    client.SetTimeout(std::chrono::seconds(5));
+    auto res = client.Get("/ok");
+    EXPECT_EQ(res.status_code, 200);
+    EXPECT_EQ(res.body, "https ok");
+  }
+
+  server.Stop();
+}
+
+TEST(WebSocketIntegrationTest, WebSocketClientRejectsUntrustedCertByDefault) {
+  uint16_t port = 8171;
+  cpphttp::HttpServer server(port);
+  cpptcpnet::TcpListener::SslConfig ssl_config;
+  ssl_config.cert_file = CPPHTTP_CERTS_DIR "/server.crt";
+  ssl_config.key_file = CPPHTTP_CERTS_DIR "/server.key";
+  ASSERT_NO_THROW(server.GetListener().EnableSSL(ssl_config));
+  cpphttp::WebSocketBehavior ws_behavior;
+  server.WebSocket("/ws", std::move(ws_behavior));
+  server.Start();
+
+  cpphttp::WebSocketClient client;
+  EXPECT_FALSE(client.Connect("wss://127.0.0.1:" + std::to_string(port) + "/ws",
+                              std::chrono::milliseconds(1500)));
+
+  server.Stop();
 }
 #endif

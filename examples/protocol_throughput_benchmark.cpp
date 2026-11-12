@@ -115,7 +115,10 @@ int main(int argc, char *argv[]) {
     tcp_client.SetMaxOutboundBufferSize(PAYLOAD_SIZE * 2);
     tcp_client.SetSendChunkSize(128 * 1024);
     tcp_client.SetTimeout(std::chrono::seconds(5));
-    tcp_client.EnableSSL();
+    cpphttp::ClientTlsConfig client_tls_config;
+    client_tls_config.ca_file = cert_file;
+
+    tcp_client.EnableSSL(client_tls_config);
 
     try {
       auto start = std::chrono::high_resolution_clock::now();
@@ -152,7 +155,9 @@ int main(int argc, char *argv[]) {
     quic_client.SetMaxOutboundBufferSize(PAYLOAD_SIZE * 2);
     quic_client.SetTimeout(std::chrono::seconds(8));
     quic_client.SetSendChunkSize(128 * 1024);
-    quic_client.EnableSSL();
+    cpphttp::ClientTlsConfig quic_tls_config;
+    quic_tls_config.ca_file = cert_file;
+    quic_client.EnableSSL(quic_tls_config);
 
     cppquic::QuicProfile client_quic_profile =
         cppquic::QuicProfile::HighThroughput();
@@ -214,6 +219,9 @@ int main(int argc, char *argv[]) {
     cpphttp::WebSocketClient ws_client;
     ws_client.SetMaxBodySize(PAYLOAD_SIZE * 2);
     ws_client.SetMaxOutboundBufferSize(PAYLOAD_SIZE * 2);
+    cpphttp::ClientTlsConfig ws_tls_config;
+    ws_tls_config.ca_file = cert_file;
+    ws_client.SetTlsConfig(ws_tls_config);
 
     size_t chunk_size = 256 * 1024;  // 256 KB chunks
     size_t total_to_send = PAYLOAD_SIZE;
