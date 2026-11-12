@@ -4345,33 +4345,75 @@ class ResponseCache {
     std::deque<CacheQueueEntry> cleanup_queue;
   };
 
+  // Percent-encodes the separators used in the cache key so that different
+  // parameter sets can never produce the same key.
+  static std::string EscapeKeyPart(const std::string &in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+      if (c == '%' || c == '&' || c == '=' || c == '?') {
+        static const char hex[] = "0123456789ABCDEF";
+        out += '%';
+        out += hex[(static_cast<unsigned char>(c) >> 4) & 0xF];
+        out += hex[static_cast<unsigned char>(c) & 0xF];
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  }
+
+  static bool HeaderContains(const HttpResponse &res, const std::string &name,
+                             const std::string &token) {
+    std::string v = res.GetHeader(name);
+    std::transform(v.begin(), v.end(), v.begin(), safe_tolower);
+    return v.find(token) != std::string::npos;
+  }
+
  public:
-  ResponseCache(std::chrono::seconds default_duration)
+  /**
+   * @param default_duration TTL for cached entries.
+   * @param max_entries Upper bound on cached responses; the oldest entries
+   * are evicted first when it is reached.
+   */
+  explicit ResponseCache(std::chrono::seconds default_duration,
+                         size_t max_entries = 1024)
       : default_duration_(default_duration),
+        max_entries_(max_entries == 0 ? 1 : max_entries),
         state_(std::make_shared<CacheState>()) {}
 
+  /**
+   * @brief Wraps a handler so that its GET 200 responses are cached.
+   *
+   * Requests carrying Authorization or Cookie headers bypass the cache, as
+   * their responses may be user specific. Responses with Set-Cookie or
+   * Cache-Control no-store/private are never stored.
+   */
   std::function<HttpResponse(const HttpRequest &)> Wrap(
       std::function<HttpResponse(const HttpRequest &)> handler,
       std::optional<std::chrono::seconds> duration = std::nullopt) {
     std::chrono::seconds cache_dur = duration.value_or(default_duration_);
     auto state = state_;
+    size_t max_entries = max_entries_;
 
-    return [state, handler, cache_dur](const HttpRequest &req) {
-      // Only cache GET requests
-      if (req.method != "GET") {
+    return [state, handler, cache_dur, max_entries](const HttpRequest &req) {
+      // Only cache GET requests that are not user specific.
+      if (req.method != "GET" || !req.GetHeader("Authorization").empty() ||
+          !req.GetHeader("Cookie").empty()) {
         return handler(req);
       }
 
-      // We use path + query string as cache key
-      std::string cache_key = req.path;
+      // Path + query parameters sorted by key (escaped, unambiguous).
+      std::string cache_key = EscapeKeyPart(req.path);
       if (!req.query_params.empty()) {
+        std::vector<std::pair<std::string, std::string>> params(
+            req.query_params.begin(), req.query_params.end());
+        std::sort(params.begin(), params.end());
         cache_key += "?";
         bool first = true;
-        for (const auto &kv : req.query_params) {
-          if (!first) {
-            cache_key += "&";
-          }
-          cache_key += kv.first + "=" + kv.second;
+        for (const auto &kv : params) {
+          if (!first) cache_key += "&";
+          cache_key += EscapeKeyPart(kv.first) + "=" + EscapeKeyPart(kv.second);
           first = false;
         }
       }
@@ -4412,8 +4454,24 @@ class ResponseCache {
 
       // Only cache 200 OK responses, and skip files as caching large files in
       // memory is bad
-      if (res.status_code == 200 && !res.is_file) {
+      bool cacheable = res.status_code == 200 && !res.is_file &&
+                       res.GetHeader("Set-Cookie").empty() &&
+                       res.multi_headers.count("Set-Cookie") == 0 &&
+                       !HeaderContains(res, "Cache-Control", "no-store") &&
+                       !HeaderContains(res, "Cache-Control", "private");
+      if (cacheable) {
         std::lock_guard<std::mutex> lock(state->mutex);
+        // Evict oldest entries to stay within the bound.
+        while (state->cache.size() >= max_entries &&
+               !state->cleanup_queue.empty()) {
+          const auto &front = state->cleanup_queue.front();
+          auto old = state->cache.find(front.key);
+          if (old != state->cache.end() &&
+              old->second.expires_at == front.expires_at) {
+            state->cache.erase(old);
+          }
+          state->cleanup_queue.pop_front();
+        }
         auto expires_at = std::chrono::steady_clock::now() + cache_dur;
         state->cache[cache_key] = {res, expires_at};
         state->cleanup_queue.push_back({cache_key, expires_at});
@@ -4425,6 +4483,7 @@ class ResponseCache {
 
  private:
   std::chrono::seconds default_duration_;
+  size_t max_entries_;
   std::shared_ptr<CacheState> state_;
 };
 
@@ -5722,27 +5781,36 @@ class HttpServerImpl {
         std::string accept_encoding = request.GetHeader("Accept-Encoding");
         std::string best_encoding = negotiate_encoding(accept_encoding);
 
+        // Whether this response's encoding depends on Accept-Encoding; caches
+        // must then be told via "Vary: Accept-Encoding".
+        bool varies_by_encoding =
+            response.headers.count("Content-Encoding") == 0 &&
+            is_compressible_mimetype(response.GetHeader("Content-Type"));
+
         // For file responses, check if we should compress them.
         // We only compress full file transfers (status 200 OK) with
-        // compressible MIME types.
-        if (response.is_file && response.status_code == 200 &&
-            best_encoding != "identity" &&
-            response.headers.count("Content-Encoding") == 0 &&
-            is_compressible_mimetype(response.GetHeader("Content-Type"))) {
+        // compressible MIME types. Compressed files are sent with chunked
+        // transfer-encoding, which HTTP/1.0 clients do not support.
+        if (response.is_file) {
           std::error_code size_ec;
           size_t file_size =
               std::filesystem::file_size(response.file_path, size_ec);
-          if (!size_ec && file_size >= min_compression_size_) {
+          bool eligible = varies_by_encoding && response.status_code == 200 &&
+                          !size_ec && file_size >= min_compression_size_ &&
+                          request.version != "HTTP/1.0";
+          varies_by_encoding = eligible;
+          if (eligible && best_encoding != "identity") {
             response.headers["Content-Encoding"] = best_encoding;
             response.headers["Transfer-Encoding"] = "chunked";
             response.headers.erase("content-length");
           }
+        } else {
+          varies_by_encoding = varies_by_encoding &&
+                               response.body.size() >= min_compression_size_;
         }
 
-        if (best_encoding != "identity" &&
-            response.body.size() >= min_compression_size_ &&
-            response.headers.count("Content-Encoding") == 0 &&
-            is_compressible_mimetype(response.GetHeader("Content-Type"))) {
+        if (!response.is_file && varies_by_encoding &&
+            best_encoding != "identity") {
           std::optional<std::string> compressed;
           if (best_encoding == "zstd") {
             compressed = zstd_compress(response.body, zstd_level_);
@@ -5755,6 +5823,21 @@ class HttpServerImpl {
             response.body = std::move(*compressed);
             response.headers["Content-Encoding"] = best_encoding;
             response.headers.erase("content-length");
+          }
+        }
+
+        if (varies_by_encoding) {
+          auto vary_it = response.headers.find("Vary");
+          if (vary_it == response.headers.end()) {
+            response.headers["Vary"] = "Accept-Encoding";
+          } else {
+            std::string lower = vary_it->second;
+            std::transform(lower.begin(), lower.end(), lower.begin(),
+                           safe_tolower);
+            if (lower.find("accept-encoding") == std::string::npos &&
+                lower.find('*') == std::string::npos) {
+              vary_it->second += ", Accept-Encoding";
+            }
           }
         }
 

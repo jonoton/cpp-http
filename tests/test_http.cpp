@@ -3486,6 +3486,69 @@ TEST(ResponseCacheTest, BasicCaching) {
   server.Stop();
 }
 
+TEST(ResponseCacheTest, KeysBypassAndBounds) {
+  cpphttp::ResponseCache cache(std::chrono::seconds(60), 2);
+  int calls = 0;
+  auto handler = cache.Wrap([&](const cpphttp::HttpRequest &req) {
+    ++calls;
+    auto res = cpphttp::HttpResponse::Plain("n" + std::to_string(calls));
+    if (req.path == "/private") res.headers["Cache-Control"] = "private";
+    return res;
+  });
+  auto make = [](const std::string &path,
+                 std::unordered_map<std::string, std::string> q) {
+    cpphttp::HttpRequest r;
+    r.method = "GET";
+    r.path = path;
+    r.query_params = std::move(q);
+    return r;
+  };
+
+  // {a: "1&b=2"} and {a: "1", b: "2"} must not share a cache entry.
+  auto r1 = handler(make("/x", {{"a", "1&b=2"}}));
+  auto r2 = handler(make("/x", {{"a", "1"}, {"b", "2"}}));
+  EXPECT_NE(r1.body, r2.body);
+  // Same parameters in any order hit the same entry.
+  auto r3 = handler(make("/x", {{"b", "2"}, {"a", "1"}}));
+  EXPECT_EQ(r2.body, r3.body);
+
+  // Requests with credentials bypass the cache entirely.
+  auto auth = make("/x", {{"a", "1"}, {"b", "2"}});
+  auth.headers["Authorization"] = "Bearer t";
+  EXPECT_NE(handler(auth).body, r2.body);
+
+  // Cache-Control: private responses are not stored.
+  auto p1 = handler(make("/private", {}));
+  auto p2 = handler(make("/private", {}));
+  EXPECT_NE(p1.body, p2.body);
+
+  // At most 2 entries: adding a third evicts the oldest ("/x?a=1%26b=2").
+  handler(make("/y", {}));
+  int before = calls;
+  handler(make("/x", {{"a", "1&b=2"}}));
+  EXPECT_EQ(calls, before + 1);
+}
+
+TEST(HttpCompressionTest, CompressibleResponsesSendVary) {
+  cpphttp::HttpServer server(8168, "127.0.0.1");
+  server.Get("/big", [](const cpphttp::HttpRequest &) {
+    return cpphttp::HttpResponse::Plain(std::string(4096, 'v'));
+  });
+  server.Get("/small", [](const cpphttp::HttpRequest &) {
+    return cpphttp::HttpResponse::Plain("tiny");
+  });
+  server.Start();
+  cpphttp::HttpClient client("127.0.0.1", 8168);
+  auto big = client.Get("/big");
+  EXPECT_EQ(big.GetHeader("Vary"), "Accept-Encoding");
+  auto big_identity = client.Get("/big", {{"Accept-Encoding", "identity"}});
+  EXPECT_EQ(big_identity.GetHeader("Vary"), "Accept-Encoding");
+  EXPECT_TRUE(big_identity.GetHeader("Content-Encoding").empty());
+  auto small = client.Get("/small");
+  EXPECT_TRUE(small.GetHeader("Vary").empty());
+  server.Stop();
+}
+
 TEST(HttpStreamingTest, DownloadLargeFileStream) {
   // 1. Create a 5MB temporary file
   std::string temp_filename = "temp_download_5mb.bin";

@@ -407,6 +407,8 @@ To optimize server performance, `cpp-http` provides a `ResponseCache` utility to
 - **Exclusions**: Skips file-based responses (`is_file == true`) to prevent loading large static files into RAM.
 - **Cache Key**: Generated using the request path combined with normalized (sorted) query parameters to ensure consistency.
 - **Lifetime**: Uses `std::shared_ptr` internals, meaning cached state is safely preserved across asynchronous worker threads.
+- **Privacy**: Requests with `Authorization` or `Cookie` headers bypass the cache; responses with `Set-Cookie` or `Cache-Control: no-store`/`private` are not stored.
+- **Size**: Holds at most `max_entries` responses (second constructor argument, default 1024), evicting the oldest first.
 
 ### Example Usage:
 
