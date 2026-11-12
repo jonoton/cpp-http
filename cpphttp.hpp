@@ -12,6 +12,7 @@
 #include <zstd.h>
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
@@ -513,6 +514,10 @@ inline const std::vector<HuffmanNode> &GetHuffmanTree() {
 inline bool DecodeHuffman(const uint8_t *buf, size_t len, std::string &out) {
   const auto &tree = GetHuffmanTree();
   int curr = 0;
+  // Bits consumed since the last fully decoded symbol, and whether they were
+  // all 1s. RFC 7541 Section 5.2: padding must be < 8 bits of the EOS prefix.
+  int pending_bits = 0;
+  bool pending_all_ones = true;
   out.clear();
   for (size_t i = 0; i < len; ++i) {
     uint8_t byte = buf[i];
@@ -520,16 +525,21 @@ inline bool DecodeHuffman(const uint8_t *buf, size_t len, std::string &out) {
       int bit = (byte >> bit_idx) & 1;
       curr = tree[curr].child[bit];
       if (curr == -1) return false;
+      ++pending_bits;
+      pending_all_ones = pending_all_ones && (bit == 1);
       if (tree[curr].symbol != -1) {
         if (tree[curr].symbol == 256) {
-          return true;
+          // An explicit EOS symbol inside a string literal is a decoding error.
+          return false;
         }
         out.push_back(static_cast<char>(tree[curr].symbol));
         curr = 0;
+        pending_bits = 0;
+        pending_all_ones = true;
       }
     }
   }
-  return true;
+  return pending_bits < 8 && pending_all_ones;
 }
 
 inline void EncodeInteger(std::vector<uint8_t> &buf, uint64_t value,
@@ -561,7 +571,13 @@ inline bool DecodeInteger(const uint8_t *buf, size_t len, size_t &offset,
   result = prefix_mask;
   while (offset < len) {
     uint8_t b = buf[offset++];
-    result += static_cast<uint64_t>(b & 127) << m;
+    uint64_t chunk = static_cast<uint64_t>(b & 127);
+    // Reject encodings that would shift past 62 bits or overflow; QPACK
+    // integers in practice are far smaller (RFC 9204 Section 4.1.1).
+    if (m > 56 || (chunk << m) > (std::numeric_limits<uint64_t>::max() >> 2) - result) {
+      return false;
+    }
+    result += chunk << m;
     m += 7;
     if ((b & 128) == 0) {
       return true;
@@ -577,7 +593,7 @@ inline bool DecodeString(const uint8_t *buf, size_t len, size_t &offset,
   bool is_huffman = (first & 128) != 0;
   uint64_t str_len = 0;
   if (!DecodeInteger(buf, len, offset, 127, str_len)) return false;
-  if (offset + str_len > len) return false;
+  if (offset > len || str_len > len - offset) return false;
 
   if (is_huffman) {
     if (!DecodeHuffman(buf + offset, str_len, out)) return false;
@@ -627,7 +643,7 @@ inline bool Decode(const uint8_t *buf, size_t len,
       bool is_huffman_name = (type_byte & 0x08) != 0;
       uint64_t name_len = 0;
       if (!DecodeInteger(buf, len, offset, 0x07, name_len)) return false;
-      if (offset + name_len > len) return false;
+      if (offset > len || name_len > len - offset) return false;
 
       std::string name;
       if (is_huffman_name) {
@@ -754,6 +770,45 @@ inline std::vector<uint8_t> GetSettingsPayload() {
   return payload;
 }
 
+// RFC 9110 Section 5.6.2 token characters (used for field names and methods).
+inline bool IsHttpToken(const std::string &s) {
+  if (s.empty()) return false;
+  for (unsigned char c : s) {
+    if (std::isalnum(c)) continue;
+    switch (c) {
+      case '!': case '#': case '$': case '%': case '&': case '\'': case '*':
+      case '+': case '-': case '.': case '^': case '_': case '`': case '|':
+      case '~':
+        continue;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+// Field values may not contain CR, LF or NUL (RFC 9110 Section 5.5).
+inline bool IsHttpFieldValue(const std::string &s) {
+  for (unsigned char c : s) {
+    if (c == '\r' || c == '\n' || c == '\0') return false;
+  }
+  return true;
+}
+
+// A request target may not contain whitespace or control characters.
+inline bool IsHttpRequestTarget(const std::string &s) {
+  if (s.empty()) return false;
+  for (unsigned char c : s) {
+    if (c <= 0x20 || c == 0x7F) return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Converts decoded HTTP/3 header fields into an HTTP/1.1 request.
+ * @throws std::invalid_argument if any pseudo-header or field would allow
+ * injecting extra request lines or headers (CR/LF, whitespace, bad tokens).
+ */
 inline std::string ReconstructHttp11Request(
     const std::vector<std::pair<std::string, std::string>> &headers,
     const std::vector<uint8_t> &body) {
@@ -771,13 +826,27 @@ inline std::string ReconstructHttp11Request(
       host = p.second;
   }
 
+  if (!IsHttpToken(method)) {
+    throw std::invalid_argument("Invalid HTTP/3 :method");
+  }
+  if (!IsHttpRequestTarget(path)) {
+    throw std::invalid_argument("Invalid HTTP/3 :path");
+  }
+  if (!IsHttpFieldValue(host) ||
+      host.find_first_of(" \t") != std::string::npos) {
+    throw std::invalid_argument("Invalid HTTP/3 :authority");
+  }
+
   req += method + " " + path + " HTTP/1.1\r\n";
   if (!host.empty()) {
     req += "Host: " + host + "\r\n";
   }
 
   for (const auto &p : headers) {
-    if (p.first[0] == ':') continue;
+    if (!p.first.empty() && p.first[0] == ':') continue;
+    if (!IsHttpToken(p.first) || !IsHttpFieldValue(p.second)) {
+      throw std::invalid_argument("Invalid HTTP/3 header field");
+    }
     if (p.first == "host" && !host.empty()) continue;
     req += p.first + ": " + p.second + "\r\n";
   }

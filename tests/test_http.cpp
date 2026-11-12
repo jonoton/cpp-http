@@ -3736,6 +3736,70 @@ TEST(Http3Test, HuffmanEncodingDecoding) {
   EXPECT_EQ(input, output);
 }
 
+TEST(Http3Test, HuffmanDecodesRfc7541Example) {
+  // RFC 7541 C.4.1: "www.example.com" Huffman-encoded.
+  const uint8_t encoded[] = {0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a,
+                             0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff};
+  std::string out;
+  EXPECT_TRUE(cpphttp::qpack::DecodeHuffman(encoded, sizeof(encoded), out));
+  EXPECT_EQ(out, "www.example.com");
+}
+
+TEST(Http3Test, HuffmanRejectsInvalidPadding) {
+  // 0x00: '0' is the 5-bit code 00000, leaving 3 pad bits of 0 -> bad.
+  const uint8_t zero_pad[] = {0x00};
+  std::string out;
+  EXPECT_FALSE(cpphttp::qpack::DecodeHuffman(zero_pad, sizeof(zero_pad), out));
+  // A full byte of 1s is >= 8 bits of padding -> bad.
+  const uint8_t long_pad[] = {0xff};
+  EXPECT_FALSE(cpphttp::qpack::DecodeHuffman(long_pad, sizeof(long_pad), out));
+}
+
+TEST(Http3Test, QPackRejectsOverflowingStringLength) {
+  // Literal field line with literal name 'a', then a value length whose
+  // varint would wrap offset + length around 2^64.
+  std::vector<uint8_t> buf = {0x00, 0x00, 0x21, 'a', 0x7F};
+  uint64_t v = static_cast<uint64_t>(0) - 127 - 6;
+  for (int i = 0; i < 10; ++i) {
+    buf.push_back(static_cast<uint8_t>((v & 127) | (i < 9 ? 128 : 0)));
+    v >>= 7;
+  }
+  std::vector<std::pair<std::string, std::string>> headers;
+  EXPECT_FALSE(cpphttp::qpack::Decode(buf.data(), buf.size(), headers));
+
+  // Same with a Huffman-flagged value (would read far out of bounds).
+  buf[4] = 0xFF;
+  headers.clear();
+  EXPECT_FALSE(cpphttp::qpack::Decode(buf.data(), buf.size(), headers));
+}
+
+TEST(Http3Test, QPackRejectsOverlongInteger) {
+  // Indexed static field line with an integer continuation that never ends
+  // within 64 bits.
+  std::vector<uint8_t> buf = {0x00, 0x00, 0xFF};
+  for (int i = 0; i < 12; ++i) buf.push_back(0xFF);
+  buf.push_back(0x01);
+  std::vector<std::pair<std::string, std::string>> headers;
+  EXPECT_FALSE(cpphttp::qpack::Decode(buf.data(), buf.size(), headers));
+}
+
+TEST(Http3Test, ReconstructRequestRejectsCrlfInjection) {
+  std::vector<uint8_t> body;
+  EXPECT_THROW(cpphttp::http3::ReconstructHttp11Request(
+                   {{":method", "GET"},
+                    {":path", "/"},
+                    {"x-evil", "a\r\nTransfer-Encoding: chunked"}},
+                   body),
+               std::invalid_argument);
+  EXPECT_THROW(cpphttp::http3::ReconstructHttp11Request(
+                   {{":method", "GET"}, {":path", "/ HTTP/1.1\r\nX: y"}}, body),
+               std::invalid_argument);
+  EXPECT_THROW(cpphttp::http3::ReconstructHttp11Request(
+                   {{":method", "GET"}, {":path", "/"}, {"bad name", "v"}},
+                   body),
+               std::invalid_argument);
+}
+
 TEST(Http3Test, QPackStaticTable) {
   const auto &table = cpphttp::qpack::GetStaticTable();
   EXPECT_EQ(table.size(), 99);
