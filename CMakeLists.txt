@@ -44,20 +44,29 @@ find_package(ZLIB QUIET)
 if(NOT ZLIB_FOUND)
     message(STATUS "ZLIB not found, downloading via FetchContent...")
     include(FetchContent)
+    set(ZLIB_BUILD_SHARED OFF CACHE BOOL "Enable building zlib shared library" FORCE)
+    set(ZLIB_BUILD_STATIC ON CACHE BOOL "Enable building zlib static library" FORCE)
+    set(ZLIB_BUILD_TESTING OFF CACHE BOOL "Enable Zlib Examples as tests" FORCE)
+    set(ZLIB_INSTALL OFF CACHE BOOL "Enable installation of zlib" FORCE)
     FetchContent_Declare(
       zlib
-      URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+      URL https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz
+      URL_HASH SHA256=02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584
     )
     FetchContent_MakeAvailable(zlib)
     
     if(TARGET zlibstatic)
-        add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        if(NOT TARGET ZLIB::ZLIB)
+            add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        endif()
         target_include_directories(zlibstatic PUBLIC 
             $<BUILD_INTERFACE:${zlib_SOURCE_DIR}> 
             $<BUILD_INTERFACE:${zlib_BINARY_DIR}>
         )
     elseif(TARGET zlib)
-        add_library(ZLIB::ZLIB ALIAS zlib)
+        if(NOT TARGET ZLIB::ZLIB)
+            add_library(ZLIB::ZLIB ALIAS zlib)
+        endif()
         target_include_directories(zlib PUBLIC 
             $<BUILD_INTERFACE:${zlib_SOURCE_DIR}> 
             $<BUILD_INTERFACE:${zlib_BINARY_DIR}>
@@ -72,7 +81,8 @@ if(NOT Brotli_FOUND)
     include(FetchContent)
     FetchContent_Declare(
       brotli
-      URL https://github.com/google/brotli/archive/refs/tags/v1.1.0.tar.gz
+      URL https://github.com/google/brotli/archive/refs/tags/v1.2.1.tar.gz
+      URL_HASH SHA256=98d35d11a78dc453aebb7d10c3748f3f73ff78c8267c0dc697b8631f67bf7e8f
     )
     set(BROTLI_BUILD_TOOLS OFF CACHE BOOL "Build Brotli command line utility" FORCE)
     set(BROTLI_DISABLE_TESTS ON CACHE BOOL "Disable Brotli tests" FORCE)
@@ -86,7 +96,8 @@ if(NOT zstd_FOUND)
     include(FetchContent)
     FetchContent_Declare(
       zstd
-      URL https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+      URL https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+      URL_HASH SHA256=eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
       SOURCE_SUBDIR "build/cmake"
     )
     set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "Build programs" FORCE)
@@ -176,7 +187,8 @@ if(CPPHTTP_BUILD_TESTS)
     endif()
     FetchContent_Declare(
       googletest
-      URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+      URL https://github.com/google/googletest/archive/refs/tags/v1.18.0.zip
+      URL_HASH SHA256=63b9c77751a5b8f492486005f67533fdc58682b67476fcb91650be5958d5195a
     )
     # For Windows: Prevent overriding the parent project's compiler/linker settings
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
