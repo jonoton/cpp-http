@@ -1253,6 +1253,45 @@ TEST(HttpIntegrationTest, RedirectMethodDowngrade) {
   server.Stop();
 }
 
+// Destroying clients while the server is still sending must not leave
+// callbacks running on freed objects (run under ASan to be meaningful).
+TEST(WebSocketIntegrationTest, ClientDestroyedWhileReceiving) {
+  cpphttp::HttpServer server(8167, "127.0.0.1");
+  cpphttp::WebSocketBehavior ws_behavior;
+  ws_behavior.on_open = [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
+    for (int i = 0; i < 200; ++i) conn->Send(std::string(512, 'x'));
+  };
+  server.WebSocket("/ws", std::move(ws_behavior));
+  server.Get("/data", [](const cpphttp::HttpRequest &) {
+    return cpphttp::HttpResponse::Plain(std::string(256 * 1024, 'd'));
+  });
+  server.Start();
+
+  std::atomic<int> messages{0};
+  for (int i = 0; i < 20; ++i) {
+    auto client = std::make_unique<cpphttp::WebSocketClient>();
+    client->OnMessage([&](const std::string &) { ++messages; });
+    // Close from inside a callback on some iterations.
+    if (i % 2 == 0) {
+      auto *raw = client.get();
+      client->OnMessage([&, raw](const std::string &) {
+        if (++messages % 50 == 0) raw->Disconnect();
+      });
+    }
+    ASSERT_TRUE(client->Connect("ws://127.0.0.1:8167/ws"));
+    client.reset();
+  }
+
+  for (int i = 0; i < 20; ++i) {
+    auto client = std::make_unique<cpphttp::HttpClient>("127.0.0.1", 8167);
+    auto fut = client->GetAsync("/data");
+    if (i % 2 == 0) fut.wait();
+    client.reset();
+  }
+  EXPECT_GT(messages.load(), 0);
+  server.Stop();
+}
+
 TEST(WebSocketIntegrationTest, WebSocketClientPlainEcho) {
   cpphttp::HttpServer server(8110);
 

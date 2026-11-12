@@ -74,6 +74,56 @@ inline LogCallback &GetLogger() {
   return logger;
 }
 
+// Tracks which object's network callback is running on the current thread,
+// so teardown code can tell whether it may join the network threads (called
+// from outside) or must hand them to a helper thread (called from inside one
+// of their own callbacks, where joining would self-deadlock).
+inline const void *&CallbackOwner() {
+  thread_local const void *owner = nullptr;
+  return owner;
+}
+
+struct CallbackScope {
+  const void *prev;
+  explicit CallbackScope(const void *owner) : prev(CallbackOwner()) {
+    CallbackOwner() = owner;
+  }
+  ~CallbackScope() { CallbackOwner() = prev; }
+  CallbackScope(const CallbackScope &) = delete;
+  CallbackScope &operator=(const CallbackScope &) = delete;
+};
+
+// Stops a TCP client and its event worker. When called from one of their own
+// callbacks the stop runs on a helper thread that is kept in `pending` and
+// joined by a later call made from outside the callbacks.
+inline void StopClientAndWorker(std::unique_ptr<cpptcpnet::TcpClient> client,
+                                std::unique_ptr<cpppubsub::Worker> worker,
+                                bool in_own_callback,
+                                std::vector<std::thread> &pending,
+                                std::mutex &pending_mtx) {
+  if (in_own_callback) {
+    if (client || worker) {
+      std::lock_guard<std::mutex> lock(pending_mtx);
+      pending.emplace_back(
+          [c = std::move(client), w = std::move(worker)]() mutable {
+            if (c) c->Stop();
+            if (w) w->Stop();
+          });
+    }
+    return;
+  }
+  if (client) client->Stop();
+  if (worker) worker->Stop();
+  std::vector<std::thread> to_join;
+  {
+    std::lock_guard<std::mutex> lock(pending_mtx);
+    to_join.swap(pending);
+  }
+  for (auto &t : to_join) {
+    if (t.joinable()) t.join();
+  }
+}
+
 inline void Log(LogSeverity severity, const std::string &className,
                 const std::string &message) {
   LogCallback handler;
@@ -1059,6 +1109,12 @@ class TcpClientTransport {
 
   void EnableSSL() { ssl_enabled_ = true; }
   void Start() {}
+
+  /**
+   * @brief Closes the connection. When called from outside the transport's
+   * own callbacks this blocks until no callback can run any more, so the
+   * object may be destroyed right afterwards.
+   */
   void Stop() {
     std::unique_ptr<cpptcpnet::TcpClient> old_client;
     std::unique_ptr<cpppubsub::Worker> old_worker;
@@ -1069,12 +1125,9 @@ class TcpClientTransport {
       state_sub_.reset();
       session_id_ = 0;
     }
-    if (old_client || old_worker) {
-      std::thread([c = std::move(old_client), w = std::move(old_worker)]() {
-        if (c) c->Stop();
-        if (w) w->Stop();
-      }).detach();
-    }
+    internal::StopClientAndWorker(std::move(old_client), std::move(old_worker),
+                                  internal::CallbackOwner() == this,
+                                  pending_stops_, pending_stops_mtx_);
   }
 
   uint64_t Connect(const std::string &host, uint16_t port,
@@ -1087,11 +1140,16 @@ class TcpClientTransport {
     }
     client->SetDataHandler(
         [this](uint64_t session_id, const std::vector<uint8_t> &data) {
-          std::lock_guard<std::mutex> lock(mtx_);
-          if (session_id != session_id_) return;
-          if (data_handler_) {
-            data_handler_(session_id, data);
+          internal::CallbackScope scope(this);
+          std::function<void(uint64_t, const std::vector<uint8_t> &)> handler;
+          {
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (session_id != session_id_) return;
+            handler = data_handler_;
           }
+          // Invoked without mtx_ held: the handler may call back into this
+          // transport, and HttpClient takes its own lock in the handler.
+          if (handler) handler(session_id, data);
         });
 
     auto state_sub =
@@ -1107,6 +1165,7 @@ class TcpClientTransport {
     worker->AddSubscription<cpptcpnet::ConnectionEvent>(
         state_sub, [this, connected, disconnected, connect_mtx,
                     connect_cv](const cpptcpnet::ConnectionEvent &e) {
+          internal::CallbackScope scope(this);
           {
             std::lock_guard<std::mutex> lock(*connect_mtx);
             if (e.session_id == 0) return;
@@ -1119,16 +1178,18 @@ class TcpClientTransport {
             }
           }
           if (e.state == cpptcpnet::ConnectionState::Disconnected) {
-            std::lock_guard<std::mutex> lock(mtx_);
-            if (disconnect_handler_) {
-              disconnect_handler_();
+            std::function<void()> handler;
+            {
+              std::lock_guard<std::mutex> lock(mtx_);
+              handler = disconnect_handler_;
             }
+            if (handler) handler();
           }
         });
     worker->Start();
     client->Start();
 
-    uint64_t sid = client->Connect(host, port);
+  uint64_t sid = client->Connect(host, port);
     if (sid == 0) {
       client->Stop();
       worker->Stop();
@@ -1221,6 +1282,8 @@ class TcpClientTransport {
   std::function<void(uint64_t, const std::vector<uint8_t> &)> data_handler_;
   std::function<void()> disconnect_handler_;
   std::mutex mtx_;
+  std::vector<std::thread> pending_stops_;
+  std::mutex pending_stops_mtx_;
 };
 
 #ifdef CPPHTTP_ENABLE_QUIC
@@ -7270,6 +7333,7 @@ class WebSocketClient {
 
     ssl_enabled_ = (protocol == "https" || protocol == "wss");
 
+    Disconnect();  // tear down any previous connection first
     client_ = std::make_unique<cpptcpnet::TcpClient>();
     client_->SetNoDelay(true);
     if (max_outbound_buffer_size_ > 0) {
@@ -7288,6 +7352,7 @@ class WebSocketClient {
 
     client_->SetDataHandler(
         [this](uint64_t /*session_id*/, const std::vector<uint8_t> &data) {
+          internal::CallbackScope scope(this);
           bool run_process_frames = false;
           {
             std::lock_guard<std::mutex> lock(mtx_);
@@ -7309,6 +7374,7 @@ class WebSocketClient {
     worker_ = std::make_unique<cpppubsub::Worker>();
     worker_->AddSubscription<cpptcpnet::ConnectionEvent>(
         state_sub_, [this](const cpptcpnet::ConnectionEvent &e) {
+          internal::CallbackScope scope(this);
           std::lock_guard<std::mutex> lock(mtx_);
           if (e.state == cpptcpnet::ConnectionState::Disconnected) {
             disconnected_ = true;
@@ -7486,12 +7552,11 @@ class WebSocketClient {
       cv_.notify_all();
     }
 
-    if (old_client || old_worker) {
-      std::thread([c = std::move(old_client), w = std::move(old_worker)]() {
-        if (c) c->Stop();
-        if (w) w->Stop();
-      }).detach();
-    }
+    // From outside the client's callbacks this waits until no callback can
+    // run any more, so the object may be destroyed right afterwards.
+    internal::StopClientAndWorker(std::move(old_client), std::move(old_worker),
+                                  internal::CallbackOwner() == this,
+                                  pending_stops_, pending_stops_mtx_);
   }
 
   bool Send(const std::string &message) {
@@ -7756,6 +7821,8 @@ class WebSocketClient {
   uint8_t ws_fragmented_opcode_ = 0;
   std::vector<uint8_t> ws_assembled_payload_;
   bool processing_frames_ = false;
+  std::vector<std::thread> pending_stops_;
+  std::mutex pending_stops_mtx_;
 };
 
 }  // namespace cpphttp
