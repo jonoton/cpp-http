@@ -2584,7 +2584,14 @@ inline std::optional<std::string> gzip_compress(
   return outstring;
 }
 
-inline std::optional<std::string> gzip_decompress(const std::string &data) {
+// The *_decompress helpers stop and return std::nullopt once the output would
+// exceed max_output_size (setting *limit_exceeded if given), so a small
+// compressed body cannot expand into an unbounded allocation.
+inline std::optional<std::string> gzip_decompress(
+    const std::string &data,
+    size_t max_output_size = std::numeric_limits<size_t>::max(),
+    bool *limit_exceeded = nullptr) {
+  if (limit_exceeded) *limit_exceeded = false;
   if (data.size() > std::numeric_limits<uInt>::max()) {
     return std::nullopt;
   }
@@ -2608,9 +2615,13 @@ inline std::optional<std::string> gzip_decompress(const std::string &data) {
 
     ret = inflate(&zs, Z_NO_FLUSH);
 
-    if (outstring.size() < zs.total_out) {
-      outstring.append(outbuffer, zs.total_out - outstring.size());
+    size_t produced = sizeof(outbuffer) - zs.avail_out;
+    if (produced > max_output_size - outstring.size()) {
+      if (limit_exceeded) *limit_exceeded = true;
+      inflateEnd(&zs);
+      return std::nullopt;
     }
+    outstring.append(outbuffer, produced);
   } while (ret == Z_OK);
 
   inflateEnd(&zs);
@@ -2637,7 +2648,11 @@ inline std::optional<std::string> brotli_compress(const std::string &data,
   return outstring;
 }
 
-inline std::optional<std::string> brotli_decompress(const std::string &data) {
+inline std::optional<std::string> brotli_decompress(
+    const std::string &data,
+    size_t max_output_size = std::numeric_limits<size_t>::max(),
+    bool *limit_exceeded = nullptr) {
+  if (limit_exceeded) *limit_exceeded = false;
   BrotliDecoderState *state =
       BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
   if (!state) {
@@ -2659,9 +2674,12 @@ inline std::optional<std::string> brotli_decompress(const std::string &data) {
                                            &available_out, &next_out, nullptr);
 
     size_t decompressed_size = sizeof(outbuffer) - available_out;
-    if (decompressed_size > 0) {
-      outstring.append(outbuffer, decompressed_size);
+    if (decompressed_size > max_output_size - outstring.size()) {
+      if (limit_exceeded) *limit_exceeded = true;
+      BrotliDecoderDestroyInstance(state);
+      return std::nullopt;
     }
+    outstring.append(outbuffer, decompressed_size);
 
     if (result == BROTLI_DECODER_RESULT_ERROR) {
       BrotliDecoderDestroyInstance(state);
@@ -2692,7 +2710,11 @@ inline std::optional<std::string> zstd_compress(const std::string &data,
   return outstring;
 }
 
-inline std::optional<std::string> zstd_decompress(const std::string &data) {
+inline std::optional<std::string> zstd_decompress(
+    const std::string &data,
+    size_t max_output_size = std::numeric_limits<size_t>::max(),
+    bool *limit_exceeded = nullptr) {
+  if (limit_exceeded) *limit_exceeded = false;
   unsigned long long const rSize =
       ZSTD_getFrameContentSize(data.data(), data.size());
   if (rSize == ZSTD_CONTENTSIZE_ERROR) {
@@ -2700,10 +2722,15 @@ inline std::optional<std::string> zstd_decompress(const std::string &data) {
   }
 
   if (rSize != ZSTD_CONTENTSIZE_UNKNOWN) {
+    // The declared size comes from the (untrusted) frame header.
+    if (rSize > max_output_size) {
+      if (limit_exceeded) *limit_exceeded = true;
+      return std::nullopt;
+    }
     std::string outstring(static_cast<size_t>(rSize), '\0');
     size_t const dSize = ZSTD_decompress(&outstring[0], outstring.size(),
                                          data.data(), data.size());
-    if (ZSTD_isError(dSize)) {
+    if (ZSTD_isError(dSize) || dSize != rSize) {
       return std::nullopt;
     }
     return outstring;
@@ -2718,27 +2745,30 @@ inline std::optional<std::string> zstd_decompress(const std::string &data) {
   std::string outstring;
   ZSTD_inBuffer input = {data.data(), data.size(), 0};
 
-  bool more_output = true;
-  while (input.pos < input.size || more_output) {
+  size_t last_ret = 1;
+  while (true) {
     ZSTD_outBuffer output = {buffOut.data(), buffOutSize, 0};
     size_t const ret = ZSTD_decompressStream(dctx, &output, &input);
     if (ZSTD_isError(ret)) {
       ZSTD_freeDCtx(dctx);
       return std::nullopt;
     }
-    if (output.pos > 0) {
-      outstring.append(buffOut.data(), output.pos);
+    if (output.pos > max_output_size - outstring.size()) {
+      if (limit_exceeded) *limit_exceeded = true;
+      ZSTD_freeDCtx(dctx);
+      return std::nullopt;
     }
-    more_output = (ret > 0 && output.pos == buffOutSize);
-    if (ret == 0) {
-      break;
-    }
-    if (input.pos == input.size && !more_output) {
-      break;
-    }
+    outstring.append(buffOut.data(), output.pos);
+    last_ret = ret;
+    if (ret == 0) break;  // frame complete
+    bool more_output = (output.pos == buffOutSize);
+    if (input.pos == input.size && !more_output) break;
   }
 
   ZSTD_freeDCtx(dctx);
+  if (last_ret != 0) {
+    return std::nullopt;  // truncated frame
+  }
   return outstring;
 }
 
@@ -6369,6 +6399,29 @@ class HttpClientImpl {
     }
   };
 
+  // Turns a protocol-relative Location ("//host/path") into an absolute URL
+  // using the current scheme, and drops anything that is neither a path nor
+  // an http(s) URL (those are not followed).
+  std::string NormalizeRedirectLocation(const std::string &location) const {
+    if (location.size() >= 2 && location[0] == '/' && location[1] == '/') {
+      return (ssl_enabled_ ? "https:" : "http:") + location;
+    }
+    if (!location.empty() && location[0] == '/') return location;
+    std::string lower = location.substr(0, 8);
+    std::transform(lower.begin(), lower.end(), lower.begin(), safe_tolower);
+    if (lower.rfind("http://", 0) == 0 || lower.rfind("https://", 0) == 0) {
+      return location;
+    }
+    return "";
+  }
+
+  // Credentials must not be forwarded to a different origin on redirect.
+  static void StripCredentialHeaders(HeaderMap &headers) {
+    headers.erase("authorization");
+    headers.erase("proxy-authorization");
+    headers.erase("cookie");
+  }
+
   std::shared_ptr<std::atomic<bool>> alive_ =
       std::make_shared<std::atomic<bool>>(true);
   std::shared_ptr<cppasyncworker::WorkerPool> pool_;
@@ -6742,12 +6795,21 @@ class HttpClientImpl {
     }
     if (!http_response.body.empty()) {
       std::optional<std::string> decompressed;
+      bool too_large = false;
       if (content_encoding == "zstd") {
-        decompressed = zstd_decompress(http_response.body);
+        decompressed =
+            zstd_decompress(http_response.body, max_body_size_, &too_large);
       } else if (content_encoding == "br") {
-        decompressed = brotli_decompress(http_response.body);
+        decompressed =
+            brotli_decompress(http_response.body, max_body_size_, &too_large);
       } else if (content_encoding == "gzip") {
-        decompressed = gzip_decompress(http_response.body);
+        decompressed =
+            gzip_decompress(http_response.body, max_body_size_, &too_large);
+      }
+      if (too_large) {
+        throw std::runtime_error(
+            "Decompressed response body exceeds the configured max body "
+            "size");
       }
       if (decompressed.has_value()) {
         http_response.body = std::move(*decompressed);
@@ -6909,7 +6971,8 @@ class HttpClientImpl {
 
     // Follow redirects
     if (http_response.status_code >= 300 && http_response.status_code < 400) {
-      std::string location = http_response.headers["Location"];
+      std::string location = NormalizeRedirectLocation(
+          http_response.GetHeader("Location"));
       if (!location.empty()) {
         std::string next_method = method;
         if (http_response.status_code == 301 ||
@@ -6931,6 +6994,10 @@ class HttpClientImpl {
           std::string r_proto, r_host, r_path;
           uint16_t r_port;
           if (parse_url(location, r_proto, r_host, r_port, r_path)) {
+            if (ssl_enabled_ && r_proto != "https") {
+              // Never follow an HTTPS -> HTTP downgrade.
+              return http_response;
+            }
             if (r_host == host_ && r_port == port_ &&
                 (r_proto == "https") == ssl_enabled_) {
               if (next_method == "GET") {
@@ -6951,7 +7018,7 @@ class HttpClientImpl {
               new_client.SetMaxHeaderSize(max_header_size_);
               new_client.SetMaxRedirects(max_redirects_);
               HeaderMap next_headers = headers;
-              next_headers.erase("authorization");
+              StripCredentialHeaders(next_headers);
               if (next_method == "GET") {
                 return new_client.SendRequestInternal(
                     next_method, r_path, "", next_headers, redirect_depth + 1);
@@ -7054,7 +7121,8 @@ class HttpClientImpl {
 
     // Follow redirects
     if (http_response.status_code >= 300 && http_response.status_code < 400) {
-      std::string location = http_response.headers["Location"];
+      std::string location = NormalizeRedirectLocation(
+          http_response.GetHeader("Location"));
       if (!location.empty()) {
         std::string next_method = method;
         std::string next_body = body;
@@ -7072,6 +7140,10 @@ class HttpClientImpl {
           std::string r_proto, r_host, r_path;
           uint16_t r_port;
           if (parse_url(location, r_proto, r_host, r_port, r_path)) {
+            if (ssl_enabled_ && r_proto != "https") {
+              // Never follow an HTTPS -> HTTP downgrade.
+              return http_response;
+            }
             if (r_host == host_ && r_port == port_ &&
                 (r_proto == "https") == ssl_enabled_) {
               return SendRequestInternal(next_method, r_path, next_body,
@@ -7086,7 +7158,7 @@ class HttpClientImpl {
               new_client.SetMaxHeaderSize(max_header_size_);
               new_client.SetMaxRedirects(max_redirects_);
               HeaderMap next_headers = headers;
-              next_headers.erase("authorization");
+              StripCredentialHeaders(next_headers);
               return new_client.SendRequestInternal(
                   next_method, r_path, next_body, next_headers,
                   redirect_depth + 1, on_chunk);

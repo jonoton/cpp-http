@@ -1504,18 +1504,35 @@ TEST(HttpIntegrationTest, RedirectStripsAuthorizationHeader) {
     return cpphttp::HttpResponse::Redirect("http://127.0.0.1:8115/target", 302);
   });
 
+  server.Get("/redirect-relative", [](const cpphttp::HttpRequest &req) {
+    // Protocol-relative location pointing at another origin.
+    return cpphttp::HttpResponse::Redirect("//127.0.0.1:8115/target", 302);
+  });
+
   target_server.Get("/target", [](const cpphttp::HttpRequest &req) {
-    std::string auth = req.GetHeader("Authorization");
-    return cpphttp::HttpResponse::Plain("Auth: " + auth);
+    return cpphttp::HttpResponse::Plain(
+        "Auth: " + req.GetHeader("Authorization") +
+        "|Cookie: " + req.GetHeader("Cookie") +
+        "|Proxy: " + req.GetHeader("Proxy-Authorization") +
+        "|X: " + req.GetHeader("X-Custom"));
   });
 
   server.Start();
   target_server.Start();
 
   cpphttp::HttpClient client("127.0.0.1", 8114);
-  auto res = client.Get("/redirect", {{"Authorization", "Bearer token123"}});
+  std::unordered_map<std::string, std::string> creds = {
+      {"Authorization", "Bearer token123"},
+      {"Cookie", "session=secret"},
+      {"Proxy-Authorization", "Basic abc"},
+      {"X-Custom", "kept"}};
+  auto res = client.Get("/redirect", creds);
   EXPECT_EQ(res.status_code, 200);
-  EXPECT_EQ(res.body, "Auth: ");
+  EXPECT_EQ(res.body, "Auth: |Cookie: |Proxy: |X: kept");
+
+  auto res2 = client.Get("/redirect-relative", creds);
+  EXPECT_EQ(res2.status_code, 200);
+  EXPECT_EQ(res2.body, "Auth: |Cookie: |Proxy: |X: kept");
 
   server.Stop();
   target_server.Stop();
@@ -2433,6 +2450,38 @@ TEST(HttpCompressionTest, BrotliAndZstdFailurePaths) {
 
   auto decompressed_zstd = cpphttp::zstd_decompress(corrupt_data);
   EXPECT_FALSE(decompressed_zstd.has_value());
+}
+
+TEST(HttpCompressionTest, DecompressionRespectsOutputLimit) {
+  std::string original(1024 * 1024, 'a');  // compresses extremely well
+  auto gz = cpphttp::gzip_compress(original);
+  auto br = cpphttp::brotli_compress(original);
+  auto zs = cpphttp::zstd_compress(original);
+  ASSERT_TRUE(gz && br && zs);
+
+  bool exceeded = false;
+  EXPECT_FALSE(cpphttp::gzip_decompress(*gz, 64 * 1024, &exceeded));
+  EXPECT_TRUE(exceeded);
+  EXPECT_FALSE(cpphttp::brotli_decompress(*br, 64 * 1024, &exceeded));
+  EXPECT_TRUE(exceeded);
+  EXPECT_FALSE(cpphttp::zstd_decompress(*zs, 64 * 1024, &exceeded));
+  EXPECT_TRUE(exceeded);
+
+  auto ok = cpphttp::zstd_decompress(*zs, original.size(), &exceeded);
+  ASSERT_TRUE(ok.has_value());
+  EXPECT_FALSE(exceeded);
+  EXPECT_EQ(*ok, original);
+}
+
+TEST(HttpCompressionTest, ZstdTruncatedStreamFails) {
+  std::string original(200 * 1024, 'z');
+  for (size_t i = 0; i < original.size(); i += 7) original[i] = char(i);
+  // Streaming compression leaves the content size out of the frame header.
+  cpphttp::StreamCompressor c("zstd", 3);
+  auto part1 = c.Compress(original, true);
+  ASSERT_TRUE(part1.has_value());
+  std::string truncated = part1->substr(0, part1->size() / 2);
+  EXPECT_FALSE(cpphttp::zstd_decompress(truncated).has_value());
 }
 
 TEST(HttpCompressionTest, BrotliRoundTrip) {
