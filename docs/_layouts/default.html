@@ -2,35 +2,662 @@
 <html lang="{{ site.lang | default: "en-US" }}">
   <head>
     <meta charset="UTF-8">
-
-{% seo %}
-    <link rel="preconnect" href="https://fonts.gstatic.com">
-    <link rel="preload" href="https://fonts.googleapis.com/css?family=Open+Sans:400,700&display=swap" as="style" type="text/css" crossorigin>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#4c1d95">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#7c3aed">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <script>
+      (function() {
+        try {
+          var savedTheme = localStorage.getItem('theme');
+          if (savedTheme === 'dark' || savedTheme === 'light') {
+            document.documentElement.setAttribute('data-theme', savedTheme);
+          } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.documentElement.setAttribute('data-theme', 'dark');
+          } else {
+            document.documentElement.setAttribute('data-theme', 'light');
+          }
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      })();
+    </script>
+    <title>{% if page.url == '/' or page.url == '/index.html' %}{{ site.title | default: "cpp-http" }}{% elsif page.title and page.title != site.title %}{{ page.title | escape }} · {{ site.title | default: "cpp-http" }}{% else %}{{ site.title | default: "cpp-http" }}{% endif %}</title>
+{% seo title=false %}
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%236d28d9'/%3E%3Ctext x='16' y='21.5' text-anchor='middle' font-family='monospace' font-weight='bold' font-size='16' fill='%23ffffff'%3E%7B%7D%3C/text%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Noto+Color+Emoji&display=swap">
     <link rel="stylesheet" href="{{ '/assets/css/style.css?v=' | append: site.github.build_revision | relative_url }}">
   </head>
   <body>
-    <a id="skip-to-content" href="#content">Skip to the content.</a>
+    <a id="skip-to-content" class="skip-link" href="#content">Skip to content</a>
 
+    <!-- Sticky Top Navigation Bar -->
+    <nav class="site-nav" role="navigation" aria-label="Main Navigation">
+      <div class="nav-inner">
+        <a href="{{ '/' | relative_url }}" class="nav-brand">
+          <span>cpp-http</span>
+          <span class="nav-brand-badge">C++17</span>
+        </a>
+
+        <!-- Desktop Navigation Links -->
+        <ul class="nav-links">
+          <li>
+            <a href="{{ '/' | relative_url }}" class="nav-link {% if page.url == '/' or page.url == '/index.html' %}active{% endif %}" {% if page.url == '/' or page.url == '/index.html' %}aria-current="page"{% endif %}>Home</a>
+          </li>
+          <li>
+            <a href="{{ '/getting-started.html' | relative_url }}" class="nav-link {% if page.url contains 'getting-started' %}active{% endif %}" {% if page.url contains 'getting-started' %}aria-current="page"{% endif %}>Getting Started</a>
+          </li>
+          <li>
+            <a href="{{ '/basic-usage.html' | relative_url }}" class="nav-link {% if page.url contains 'basic-usage' %}active{% endif %}" {% if page.url contains 'basic-usage' %}aria-current="page"{% endif %}>Basic Usage</a>
+          </li>
+          <li>
+            <a href="{{ '/advanced-usage.html' | relative_url }}" class="nav-link {% if page.url contains 'advanced-usage' %}active{% endif %}" {% if page.url contains 'advanced-usage' %}aria-current="page"{% endif %}>Advanced Usage</a>
+          </li>
+          <li>
+            <a href="{{ '/architecture-and-examples.html' | relative_url }}" class="nav-link {% if page.url contains 'architecture-and-examples' %}active{% endif %}" {% if page.url contains 'architecture-and-examples' %}aria-current="page"{% endif %}>Architecture</a>
+          </li>
+          <li>
+            <a href="{{ '/performance-metrics.html' | relative_url }}" class="nav-link {% if page.url contains 'performance-metrics' %}active{% endif %}" {% if page.url contains 'performance-metrics' %}aria-current="page"{% endif %}>Benchmarks</a>
+          </li>
+        </ul>
+
+        <!-- Navigation Controls: Theme Toggle, GitHub, Mobile Menu -->
+        <div class="nav-controls">
+          <button id="theme-toggle" class="theme-toggle-btn" type="button" aria-label="Toggle dark mode" title="Toggle theme">
+            <svg id="theme-icon-sun" style="display:none; width:18px; height:18px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 9H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+            </svg>
+            <svg id="theme-icon-moon" style="display:block; width:18px; height:18px;" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          </button>
+
+          <a href="https://github.com/jonoton/cpp-http" class="nav-github-btn" target="_blank" rel="noopener" aria-label="GitHub Repository">
+            <svg height="18" width="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+            </svg>
+            <span class="nav-github-text">GitHub</span>
+          </a>
+
+          <button id="mobile-toggle" class="mobile-nav-toggle" type="button" aria-label="Open navigation menu" aria-expanded="false" aria-controls="docs-sidebar">
+            <svg id="mobile-icon-menu" width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </nav>
+
+    {% if page.url == '/' or page.url == '/index.html' %}
+    <!-- Header Hero Section (Home Page) -->
     <header class="page-header" role="banner">
-      <h1 class="project-name"><a href="{{ '/' | relative_url }}" style="color: #ffffff; text-decoration: none;">{{ site.title | default: site.github.repository_name }}</a></h1>
-      <h2 class="project-tagline">{{ site.description | default: site.github.project_tagline }}</h2>
-      <a href="https://github.com/jonoton/cpp-http" class="btn">View on GitHub</a>
+      <div class="header-content">
+        <h1 class="project-name"><a href="{{ '/' | relative_url }}">{{ site.title | default: "cpp-http" }}</a></h1>
+        <p class="project-tagline">{{ site.description | default: "A lightweight, high-performance, header-only C++17 HTTP/1.1 and HTTP/3 server and client library" }}</p>
+        <div class="header-badges">
+          <span class="badge">C++17 Single Header</span>
+          <span class="badge">HTTP/1.1 &amp; HTTP/3</span>
+          <span class="badge">Session-Affinity Multi-Threading</span>
+          <span class="badge">WebSockets</span>
+          <span class="badge">Zstd / Brotli / Gzip</span>
+          <span class="badge">MIT License</span>
+        </div>
+        <div class="header-actions">
+          <a href="{{ '/getting-started.html' | relative_url }}" class="hero-btn hero-btn-primary">Get Started &rarr;</a>
+          <a href="https://github.com/jonoton/cpp-http" class="hero-btn hero-btn-secondary" target="_blank" rel="noopener">View Source</a>
+        </div>
+      </div>
     </header>
+    {% endif %}
 
-    <main id="content" class="main-content" role="main">
-      {{ content }}
+    <div id="sidebar-backdrop" class="sidebar-backdrop" aria-hidden="true"></div>
 
-      <footer class="site-footer">
-        <span class="site-footer-owner"><a href="https://github.com/jonoton/cpp-http">cpp-http</a> is maintained by <a href="https://github.com/jonoton">jonoton</a>.</span>
-        <span class="site-footer-credits">This page was generated by <a href="https://pages.github.com">GitHub Pages</a>.</span>
-      </footer>
-    </main>
-    <script type="module">
-      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-      mermaid.initialize({ startOnLoad: true });
+    <!-- Documentation Layout with Sidebar -->
+    <div class="docs-wrapper">
+      <!-- Sidebar Navigation -->
+      <aside id="docs-sidebar" class="docs-sidebar" role="navigation" aria-label="Documentation Sidebar">
+        <div class="sidebar-mobile-header">
+          <span class="sidebar-mobile-title">Documentation</span>
+          <button id="sidebar-close" class="sidebar-close-btn" type="button" aria-label="Close navigation menu">
+            <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="sidebar-heading">Getting Started</div>
+        <ul class="sidebar-menu">
+          <li class="sidebar-item">
+            <a href="{{ '/' | relative_url }}" class="sidebar-link {% if page.url == '/' or page.url == '/index.html' %}active{% endif %}" {% if page.url == '/' or page.url == '/index.html' %}aria-current="page"{% endif %}>
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
+              <span>Overview</span>
+            </a>
+          </li>
+          <li class="sidebar-item">
+            <a href="{{ '/getting-started.html' | relative_url }}" class="sidebar-link {% if page.url contains 'getting-started' %}active{% endif %}" {% if page.url contains 'getting-started' %}aria-current="page"{% endif %}>
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              <span>Getting Started</span>
+            </a>
+          </li>
+        </ul>
+
+        <div class="sidebar-heading">User Guides</div>
+        <ul class="sidebar-menu">
+          <li class="sidebar-item">
+            <a href="{{ '/basic-usage.html' | relative_url }}" class="sidebar-link {% if page.url contains 'basic-usage' %}active{% endif %}" {% if page.url contains 'basic-usage' %}aria-current="page"{% endif %}>
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/></svg>
+              <span>Basic Usage</span>
+            </a>
+          </li>
+          <li class="sidebar-item">
+            <a href="{{ '/advanced-usage.html' | relative_url }}" class="sidebar-link {% if page.url contains 'advanced-usage' %}active{% endif %}" {% if page.url contains 'advanced-usage' %}aria-current="page"{% endif %}>
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              <span>Advanced Usage</span>
+            </a>
+          </li>
+        </ul>
+
+        <div class="sidebar-heading">Deep Dives</div>
+        <ul class="sidebar-menu">
+          <li class="sidebar-item">
+            <a href="{{ '/architecture-and-examples.html' | relative_url }}" class="sidebar-link {% if page.url contains 'architecture-and-examples' %}active{% endif %}" {% if page.url contains 'architecture-and-examples' %}aria-current="page"{% endif %}>
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
+              <span>Architecture &amp; Examples</span>
+            </a>
+          </li>
+          <li class="sidebar-item">
+            <a href="{{ '/performance-metrics.html' | relative_url }}" class="sidebar-link {% if page.url contains 'performance-metrics' %}active{% endif %}" {% if page.url contains 'performance-metrics' %}aria-current="page"{% endif %}>
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+              <span>Performance &amp; Benchmarks</span>
+            </a>
+          </li>
+        </ul>
+
+        <div class="sidebar-heading">Resources</div>
+        <ul class="sidebar-menu">
+          <li class="sidebar-item">
+            <a href="https://github.com/jonoton/cpp-http" class="sidebar-link" target="_blank" rel="noopener">
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/></svg>
+              <span>cpp-http</span>
+            </a>
+          </li>
+          <li class="sidebar-item">
+            <a href="https://github.com/jonoton/cpp-tcpnet" class="sidebar-link" target="_blank" rel="noopener">
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+              <span>cpp-tcpnet</span>
+            </a>
+          </li>
+          <li class="sidebar-item">
+            <a href="https://github.com/jonoton/cpp-quic" class="sidebar-link" target="_blank" rel="noopener">
+              <svg class="sidebar-icon" width="17" height="17" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/></svg>
+              <span>cpp-quic</span>
+            </a>
+          </li>
+        </ul>
+      </aside>
+
+      <!-- Main Document Content -->
+      <main id="content" class="main-content" role="main">
+        {{ content }}
+
+        <footer class="site-footer">
+          <span class="site-footer-owner"><a href="https://github.com/jonoton/cpp-http">cpp-http</a> is maintained by <a href="https://github.com/jonoton">jonoton</a>.</span>
+          <span class="site-footer-credits">Documentation hosted on <a href="https://pages.github.com">GitHub Pages</a>.</span>
+        </footer>
+      </main>
+    </div>
+
+    <!-- Client-side Scripts: Theme Toggle, Mobile Drawer, Callouts, Table Wrappers, Mermaid.js -->
+    <script>
+      // Enable smooth transitions only after first paint (prevents theme flash)
+      requestAnimationFrame(function() {
+        document.documentElement.classList.add('theme-transitions');
+      });
+
+      // 1. Mobile Sidebar Drawer Management
+      (function() {
+        const mobileToggle = document.getElementById('mobile-toggle');
+        const sidebarClose = document.getElementById('sidebar-close');
+        const sidebar = document.getElementById('docs-sidebar');
+        const backdrop = document.getElementById('sidebar-backdrop');
+
+        function setDrawer(open, restoreFocus) {
+          if (!sidebar) return;
+          sidebar.classList.toggle('mobile-open', open);
+          if (backdrop) backdrop.classList.toggle('active', open);
+          document.body.classList.toggle('drawer-open', open);
+          if (mobileToggle) {
+            mobileToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            mobileToggle.setAttribute('aria-label', open ? 'Close navigation menu' : 'Open navigation menu');
+          }
+          if (open) {
+            requestAnimationFrame(function() {
+              var target = sidebarClose || sidebar.querySelector('a, button');
+              if (target && typeof target.focus === 'function') {
+                target.focus({ preventScroll: true });
+              }
+            });
+          } else if (restoreFocus && mobileToggle && typeof mobileToggle.focus === 'function') {
+            mobileToggle.focus({ preventScroll: true });
+          }
+        }
+
+        if (mobileToggle) {
+          mobileToggle.addEventListener('click', function() {
+            const isOpen = sidebar && sidebar.classList.contains('mobile-open');
+            setDrawer(!isOpen, isOpen);
+          });
+        }
+        if (sidebarClose) {
+          sidebarClose.addEventListener('click', function() { setDrawer(false, true); });
+        }
+        if (backdrop) {
+          backdrop.addEventListener('click', function() { setDrawer(false, true); });
+        }
+        document.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape' && sidebar && sidebar.classList.contains('mobile-open')) {
+            e.preventDefault();
+            setDrawer(false, true);
+          }
+        });
+        if (sidebar) {
+          sidebar.querySelectorAll('a').forEach(function(link) {
+            link.addEventListener('click', function() { setDrawer(false, false); });
+          });
+        }
+      })();
+
+      // 2. Style Callouts for blockquotes starting with Note:, Warning:, Tip:
+      (function() {
+        document.querySelectorAll('.main-content blockquote').forEach(function(bq) {
+          const text = bq.textContent.trim();
+          if (/^Note:/i.test(text)) {
+            bq.classList.add('callout-note');
+          } else if (/^Warning:/i.test(text)) {
+            bq.classList.add('callout-warning');
+          } else if (/^Tip:/i.test(text)) {
+            bq.classList.add('callout-tip');
+          }
+        });
+      })();
+
+      // 3. Responsive Table Wrapper, Mobile Card Labels & Horizontal Scroll Hints
+      (function() {
+        document.querySelectorAll('.main-content table').forEach(function(table) {
+          const headers = Array.from(table.querySelectorAll('thead th')).map(function(th) {
+            return th.textContent.trim();
+          });
+          if (headers.length > 0) {
+            table.querySelectorAll('tbody tr').forEach(function(tr) {
+              Array.from(tr.children).forEach(function(cell, idx) {
+                if (cell.tagName === 'TD' && headers[idx] && !cell.hasAttribute('data-label')) {
+                  cell.setAttribute('data-label', headers[idx]);
+                }
+              });
+            });
+          }
+          let resp = table.parentElement;
+          if (!resp.classList.contains('table-responsive')) {
+            resp = document.createElement('div');
+            resp.className = 'table-responsive';
+            table.parentNode.insertBefore(resp, table);
+            resp.appendChild(table);
+          }
+          if (!resp.parentElement.classList.contains('table-outer')) {
+            const outer = document.createElement('div');
+            outer.className = 'table-outer';
+            resp.parentNode.insertBefore(outer, resp);
+            outer.appendChild(resp);
+          }
+        });
+
+        function updateScrollElement(el, host) {
+          if (!el) return;
+          const canScroll = el.scrollWidth > el.clientWidth + 1;
+          const hasRight = canScroll && (el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+          el.classList.toggle('has-scroll-hint', hasRight);
+          if (host && host !== el) {
+            host.classList.toggle('has-scroll-hint', hasRight);
+          }
+        }
+
+        function updateAllScrollHints() {
+          document.querySelectorAll('.table-responsive').forEach(function(resp) {
+            const outer = resp.closest('.table-outer');
+            updateScrollElement(resp, outer);
+            if (!resp.dataset.scrollHintBound) {
+              resp.dataset.scrollHintBound = '1';
+              resp.addEventListener('scroll', function() {
+                updateScrollElement(resp, resp.closest('.table-outer'));
+              }, { passive: true });
+            }
+          });
+          document.querySelectorAll('.main-content pre').forEach(function(pre) {
+            if (pre.closest('.mermaid') || pre.querySelector('code.language-mermaid')) return;
+            const host = pre.closest('.has-copy') || pre.closest('div.highlighter-rouge') || pre.closest('figure.highlight');
+            updateScrollElement(pre, host);
+            if (!pre.dataset.scrollHintBound) {
+              pre.dataset.scrollHintBound = '1';
+              pre.addEventListener('scroll', function() {
+                const h = pre.closest('.has-copy') || pre.closest('div.highlighter-rouge') || pre.closest('figure.highlight');
+                updateScrollElement(pre, h);
+              }, { passive: true });
+            }
+          });
+        }
+
+        window.__updateScrollHints = updateAllScrollHints;
+
+        let resizeTimer = null;
+        window.addEventListener('resize', function() {
+          if (resizeTimer) cancelAnimationFrame(resizeTimer);
+          resizeTimer = requestAnimationFrame(updateAllScrollHints);
+        });
+        window.addEventListener('load', updateAllScrollHints);
+        if (document.fonts && document.fonts.ready) {
+          document.fonts.ready.then(updateAllScrollHints);
+        }
+        updateAllScrollHints();
+      })();
+
+      // 4. Theme Toggle + Mermaid.js Rendering (with live re-render on theme change)
+      (function() {
+        const toggleBtn = document.getElementById('theme-toggle');
+        const sunIcon = document.getElementById('theme-icon-sun');
+        const moonIcon = document.getElementById('theme-icon-moon');
+
+        function updateIcons(theme) {
+          if (!sunIcon || !moonIcon) return;
+          if (theme === 'dark') {
+            sunIcon.style.display = 'block';
+            moonIcon.style.display = 'none';
+          } else {
+            sunIcon.style.display = 'none';
+            moonIcon.style.display = 'block';
+          }
+        }
+
+        const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+        updateIcons(currentTheme);
+
+        // Convert Kramdown ```mermaid to <div class="mermaid-wrap"><div class="mermaid-hint">...</div><div class="mermaid">...</div></div>
+        const mermaidElements = document.querySelectorAll('pre code.language-mermaid, div.language-mermaid pre code, pre.language-mermaid');
+        const mermaidDivs = [];
+        mermaidElements.forEach(function(codeEl) {
+          const preOrContainer = codeEl.closest('div.language-mermaid, div.highlighter-rouge') || codeEl.closest('pre') || codeEl;
+          if (preOrContainer && preOrContainer.parentNode) {
+            const src = codeEl.textContent.trim();
+            const wrap = document.createElement('div');
+            wrap.className = 'mermaid-wrap';
+            const hint = document.createElement('div');
+            hint.className = 'mermaid-hint';
+            hint.setAttribute('aria-hidden', 'true');
+            hint.textContent = 'Swipe to scroll \u2192';
+            const div = document.createElement('div');
+            div.className = 'mermaid';
+            div.dataset.mermaidSrc = src;
+            div.textContent = src;
+            wrap.appendChild(hint);
+            wrap.appendChild(div);
+            preOrContainer.parentNode.replaceChild(wrap, preOrContainer);
+            mermaidDivs.push(div);
+          }
+        });
+
+        let mermaidMod = null;
+
+        function updateMermaidWideStates() {
+          mermaidDivs.forEach(function(div) {
+            const wrap = div.closest('.mermaid-wrap');
+            const svg = div.querySelector('svg');
+            let isWide = false;
+            if (svg) {
+              const vb = svg.getAttribute('viewBox');
+              if (vb) {
+                const parts = vb.trim().split(/[\s,]+/);
+                const vbW = parseFloat(parts[2]);
+                if (!isNaN(vbW) && vbW > 420) {
+                  isWide = true;
+                  svg.style.minWidth = Math.min(Math.round(vbW * 0.9), 640) + 'px';
+                }
+              }
+              if (div.scrollWidth > div.clientWidth + 2) {
+                isWide = true;
+              }
+            }
+            div.classList.toggle('mermaid-wide', isWide);
+            if (wrap) wrap.classList.toggle('is-wide', isWide);
+          });
+        }
+
+        async function renderMermaid(theme) {
+          if (!mermaidMod || mermaidDivs.length === 0) return;
+          const isDark = theme === 'dark';
+          mermaidDivs.forEach(function(div) {
+            const wrap = div.closest('.mermaid-wrap');
+            div.classList.remove('mermaid-wide');
+            if (wrap) wrap.classList.remove('is-wide');
+            div.removeAttribute('data-processed');
+            div.textContent = div.dataset.mermaidSrc;
+          });
+          mermaidMod.initialize({
+            startOnLoad: false,
+            theme: 'base',
+            securityLevel: 'loose',
+            flowchart: {
+              htmlLabels: true,
+              useMaxWidth: true,
+              padding: 14
+            },
+            sequence: {
+              useMaxWidth: true
+            },
+            themeVariables: isDark ? {
+              darkMode: true,
+              background: '#1e293b',
+              fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+              fontSize: '14px',
+              primaryColor: '#312e81',
+              primaryTextColor: '#f8fafc',
+              primaryBorderColor: '#a78bfa',
+              secondaryColor: '#1e1b4b',
+              secondaryTextColor: '#e2e8f0',
+              secondaryBorderColor: '#818cf8',
+              tertiaryColor: '#0f172a',
+              tertiaryTextColor: '#f8fafc',
+              tertiaryBorderColor: '#475569',
+              lineColor: '#94a3b8',
+              textColor: '#f8fafc',
+              mainBkg: '#312e81',
+              nodeBorder: '#a78bfa',
+              nodeTextColor: '#f8fafc',
+              clusterBkg: '#0f172a',
+              clusterBorder: '#6366f1',
+              titleColor: '#f8fafc',
+              edgeLabelBackground: '#1e293b',
+              actorBkg: '#312e81',
+              actorBorder: '#a78bfa',
+              actorTextColor: '#f8fafc',
+              actorLineColor: '#94a3b8',
+              signalColor: '#cbd5e1',
+              signalTextColor: '#f8fafc',
+              labelBoxBkgColor: '#1e293b',
+              labelBoxBorderColor: '#818cf8',
+              labelTextColor: '#f8fafc',
+              loopTextColor: '#e2e8f0',
+              activationBkgColor: '#4338ca',
+              activationBorderColor: '#a78bfa',
+              noteBkgColor: '#1e3a8a',
+              noteTextColor: '#dbeafe',
+              noteBorderColor: '#60a5fa'
+            } : {
+              darkMode: false,
+              background: '#f1f5f9',
+              fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+              fontSize: '14px',
+              primaryColor: '#ede9fe',
+              primaryTextColor: '#0f172a',
+              primaryBorderColor: '#7c3aed',
+              secondaryColor: '#e0e7ff',
+              secondaryTextColor: '#1e293b',
+              secondaryBorderColor: '#6366f1',
+              tertiaryColor: '#ffffff',
+              tertiaryTextColor: '#0f172a',
+              tertiaryBorderColor: '#cbd5e1',
+              lineColor: '#475569',
+              textColor: '#0f172a',
+              mainBkg: '#ede9fe',
+              nodeBorder: '#7c3aed',
+              nodeTextColor: '#0f172a',
+              clusterBkg: '#ffffff',
+              clusterBorder: '#a78bfa',
+              titleColor: '#0f172a',
+              edgeLabelBackground: '#f1f5f9',
+              actorBkg: '#ede9fe',
+              actorBorder: '#7c3aed',
+              actorTextColor: '#0f172a',
+              actorLineColor: '#64748b',
+              signalColor: '#334155',
+              signalTextColor: '#0f172a',
+              labelBoxBkgColor: '#ffffff',
+              labelBoxBorderColor: '#7c3aed',
+              labelTextColor: '#0f172a',
+              loopTextColor: '#0f172a',
+              activationBkgColor: '#ddd6fe',
+              activationBorderColor: '#7c3aed',
+              noteBkgColor: '#eff6ff',
+              noteTextColor: '#1e3a8a',
+              noteBorderColor: '#3b82f6'
+            }
+          });
+          await mermaidMod.run({ nodes: mermaidDivs });
+          updateMermaidWideStates();
+        }
+
+        if (mermaidDivs.length > 0) {
+          const fontsReady = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+          Promise.all([
+            import('https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs'),
+            fontsReady
+          ])
+            .then(function(results) {
+              mermaidMod = results[0].default;
+              return renderMermaid(document.documentElement.getAttribute('data-theme') || 'light');
+            })
+            .catch(function(err) {
+              console.error('Failed to load Mermaid:', err);
+            });
+          window.addEventListener('resize', function() {
+            requestAnimationFrame(updateMermaidWideStates);
+          });
+        }
+
+        if (toggleBtn) {
+          toggleBtn.addEventListener('click', function() {
+            const nowTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', nowTheme);
+            try { localStorage.setItem('theme', nowTheme); } catch (e) {}
+            updateIcons(nowTheme);
+            renderMermaid(nowTheme);
+          });
+        }
+      })();
+    </script>
+      <script>
+      // Copy-to-clipboard buttons on code blocks
+      (function() {
+        var COPY_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+        var CHECK_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+        function fallbackCopy(text) {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.top = '-1000px';
+          document.body.appendChild(ta);
+          ta.select();
+          var ok = false;
+          try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+          document.body.removeChild(ta);
+          return ok ? Promise.resolve() : Promise.reject();
+        }
+
+        function copyText(text) {
+          if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text).catch(function() { return fallbackCopy(text); });
+          }
+          return fallbackCopy(text);
+        }
+
+        function addButtons() {
+          document.querySelectorAll('.main-content pre').forEach(function(pre) {
+            if (pre.closest('.mermaid') || pre.querySelector('code.language-mermaid')) return;
+            var host = pre.closest('div.highlighter-rouge') || pre.closest('figure.highlight') || pre;
+            if (host.dataset.copyReady) return;
+            host.dataset.copyReady = '1';
+            if (host === pre) {
+              var wrap = document.createElement('div');
+              wrap.className = 'code-copy-wrap';
+              pre.parentNode.insertBefore(wrap, pre);
+              wrap.appendChild(pre);
+              host = wrap;
+            }
+            host.classList.add('has-copy');
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'code-copy-btn';
+            btn.setAttribute('aria-label', 'Copy code to clipboard');
+            btn.innerHTML = COPY_ICON + '<span>Copy</span>';
+            btn.addEventListener('click', function() {
+              var code = pre.querySelector('code') || pre;
+              var text = code.innerText.replace(/\n$/, '');
+              copyText(text).then(function() {
+                btn.classList.add('copied');
+                btn.innerHTML = CHECK_ICON + '<span>Copied</span>';
+              }, function() {
+                btn.innerHTML = '<span>Press Ctrl+C</span>';
+                var range = document.createRange();
+                range.selectNodeContents(code);
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+              }).then(function() {
+                setTimeout(function() {
+                  btn.classList.remove('copied');
+                  btn.innerHTML = COPY_ICON + '<span>Copy</span>';
+                }, 1800);
+              });
+            });
+            host.appendChild(btn);
+          });
+          if (window.__updateScrollHints) {
+            window.__updateScrollHints();
+          }
+        }
+
+        // Keep short identifiers in tables on one line (no "cpp-/quic" splits);
+        // only long ones may wrap.
+        function markTableCode() {
+          document.querySelectorAll('.main-content table code').forEach(function(c) {
+            if (c.textContent.length <= 24) c.classList.add('code-nowrap');
+          });
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', markTableCode);
+        } else {
+          markTableCode();
+        }
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', addButtons);
+        } else {
+          addButtons();
+        }
+      })();
     </script>
   </body>
 </html>

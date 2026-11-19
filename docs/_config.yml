@@ -2,3 +2,8 @@ title: cpp-http
 description: A lightweight, high-performance, header-only C++17 HTTP/1.1 and HTTP/3 server and client library
 theme: jekyll-theme-cayman
 port: 4001
+repository: jonoton/cpp-http
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge

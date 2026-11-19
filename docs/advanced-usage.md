@@ -1,340 +1,72 @@
 ---
 layout: default
+title: Advanced Usage
+description: Dynamic routing, middleware pipelines, CORS, rate limiting, caching, streaming, compression, WebSockets, and HTTP/3 QUIC.
 ---
-
-[< Previous: Basic Usage](./basic-usage.html) | [🏠 Home](./) | [Next: Performance & Tuning >](./performance-metrics.html)
-<hr>
 
 # Advanced Usage
 
-This section explores advanced HTTP request processing, handling JSON payloads, multi-threaded safety, and defragmentation concepts inside `cpp-http`.
+This guide covers advanced features in `cpp-http`, including dynamic routing, middleware, security controls, streaming, compression, WebSockets, TLS, and HTTP/3 over QUIC.
 
-## JSON Payloads
+## Table of Contents
 
-Because `cpp-http` stores raw body strings in `HttpRequest::body`, you can easily integrate any JSON library (like `nlohmann/json`) inside your route handlers:
+- [Advanced Request Handling (JSON & Multipart)](#advanced-request-handling-json--multipart)
+- [Middleware Pipeline](#middleware-pipeline)
+- [CORS Middleware](#cors-middleware)
+- [Fixed-Window Rate Limiting](#fixed-window-rate-limiting)
+- [Response Caching](#response-caching)
+- [Transparent HTTP Compression](#transparent-http-compression)
+- [HTTP Streaming](#http-streaming)
+- [Static Files and SPA Mode](#static-files-and-spa-mode)
+- [WebSocket Support](#websocket-support)
+- [TLS and Redirect Scoping](#tls-and-redirect-scoping)
+- [HTTP/3 and Hybrid Transports](#http3-and-hybrid-transports)
+- [Limits and DoS Protection](#limits-and-dos-protection)
+- [Multi-Threaded Safety and Logging](#multi-threaded-safety-and-logging)
+- [TCP Defragmentation and Pipelining](#tcp-defragmentation-and-pipelining)
+
+---
+
+## Advanced Request Handling (JSON & Multipart)
+
+For standard route definitions, path parameters (`:param`), query string extraction, and multi-headers, refer to the [Basic Usage Guide](./basic-usage.html).
+
+`cpp-http` uses an `O(1)` exact-match hash table (`METHOD:path`) for fixed endpoints. If an exact match is not found, the server evaluates pattern routes (`:param` and `*`) in registration order.
+
+### JSON Payloads
+
+Because `HttpRequest::body` holds the raw payload string, you can parse and serialize JSON with any JSON library (such as `nlohmann/json`) inside your route handlers:
 
 ```cpp
 #include "cpphttp.hpp"
 #include <nlohmann/json.hpp>
-#include <iostream>
 
 using json = nlohmann::json;
 
-int main() {
-    cpphttp::HttpServer server(8080);
+server.Post("/api/users", [](const cpphttp::HttpRequest& request) {
+    try {
+        auto req_json = json::parse(request.body);
+        std::string username = req_json.at("username");
 
-    server.Post("/api/users", [](const cpphttp::HttpRequest& request) {
-        cpphttp::HttpResponse response;
-        response.headers["Content-Type"] = "application/json";
-
-        try {
-            // Parse raw request body into JSON
-            auto req_json = json::parse(request.body);
-            std::string username = req_json.at("username");
-
-            // Build success JSON response
-            json res_json;
-            res_json["status"] = "success";
-            res_json["message"] = "User " + username + " registered successfully!";
-            
-            response.status_code = 200;
-            response.body = res_json.dump();
-        } catch (const std::exception& e) {
-            // Build error JSON response
-            json err_json;
-            err_json["status"] = "error";
-            err_json["error_message"] = e.what();
-
-            response.status_code = 400;
-            response.status_message = "Bad Request";
-            response.body = err_json.dump();
-        }
-
-        return response;
-    });
-
-    server.Start();
-    // Wait...
-}
-```
-
-## Dynamic Routing & Path Parameters
-
-`cpp-http` supports dynamic routing segments using the `:param` syntax and wildcard segments using the `*` suffix:
-
-- **Path Parameters (`:param`)**: Captures a single path segment between slashes.
-- **Wildcard Segments (`*`)**: Matches all remaining subpaths and constructs a single string.
-
-```cpp
-// 1. Path parameters matching (e.g. GET /users/123/profile)
-server.Get("/users/:id/profile", [](const cpphttp::HttpRequest& request) {
-    std::string id = request.path_params.at("id"); // captures "123"
-    return cpphttp::HttpResponse::Plain("User profile: " + id);
-});
-
-// 2. Wildcard matching (e.g. GET /assets/js/jquery.js)
-server.Get("/assets/*", [](const cpphttp::HttpRequest& request) {
-    std::string filename = request.path_params.at("*"); // captures "js/jquery.js"
-    return cpphttp::HttpResponse::Plain("File requested: " + filename);
-});
-```
-
-## Query Parameters & URL Decoding
-
-Query parameters (e.g., `?q=hello&sort=desc`) are automatically stripped from routes before path matching to ensure request dispatching runs correctly. They are decoded and stored inside `HttpRequest::query_params`:
-
-```cpp
-server.Get("/search", [](const cpphttp::HttpRequest& request) {
-    std::string search_query = request.query_params.count("q") ? request.query_params.at("q") : "";
-    std::string sort = request.query_params.count("sort") ? request.query_params.at("sort") : "asc";
-
-    return cpphttp::HttpResponse::Plain("Query: " + search_query + " (sorted " + sort + ")");
-});
-```
-
-All route parameters, path names, and query values are percent-decoded automatically (e.g., `%20` becomes a space character ` `).
-
-## Middleware Pipeline
-
-You can register middleware handlers that run sequentially before any request matches a route. If any middleware returns `false`, the request chain is aborted, and the middleware's response is returned immediately (useful for authentication or validation).
-
-`cpp-http` supports both **global** and **path-scoped** middleware:
-
-### 1. Global Middleware
-```cpp
-// Register global logging middleware (applies to all routes)
-server.Use([](cpphttp::HttpRequest& request, cpphttp::HttpResponse& response) {
-    std::cout << "[Middleware Log] Request on: " << request.path << "\n";
-    return true;
-});
-```
-
-### 2. Path-Scoped Middleware
-```cpp
-// Register scoped auth middleware (only runs on paths starting with "/api")
-server.Use("/api", [](cpphttp::HttpRequest& request, cpphttp::HttpResponse& response) {
-    if (request.GetHeader("Authorization") != "secret-token") {
-        response = cpphttp::HttpResponse::Plain("Unauthorized", 401);
-        return false; // abort request chain
+        json res_json;
+        res_json["status"] = "success";
+        res_json["message"] = "User " + username + " registered!";
+        return cpphttp::HttpResponse::Json(res_json.dump(), 200);
+    } catch (const std::exception& e) {
+        json err_json;
+        err_json["status"] = "error";
+        err_json["error_message"] = e.what();
+        return cpphttp::HttpResponse::Json(err_json.dump(), 400);
     }
-    return true; // continue request processing
 });
 ```
 
-### 3. Rate Limiting Middleware
+### Multipart Form-Data Parsing
 
-`cpp-http` provides a built-in `RateLimiter` middleware class to limit requests per IP address over a sliding time window.
-
-It keys requests by `HttpRequest::client_ip`, which is the connection's peer address. If the server runs behind a trusted reverse proxy that sets `X-Forwarded-For`, call `server.SetTrustProxyHeaders(true)` so `client_ip` is taken from the first address in that header instead. Leave it disabled otherwise: any client can send `X-Forwarded-For` and would be able to bypass the limit. If an IP exceeds the configured request limit in the given time window, the rate limiter aborts the middleware chain, returns a `429 Too Many Requests` status, and sets a `Retry-After` header indicating when the client can try again.
-
-#### Global and Scoped Rate Limiting
-
-Since `RateLimiter` is implemented as standard middleware, you can register it **globally** to protect the entire server, or **scoped** to apply stricter limit configurations for specific endpoints or path prefixes:
+Use `cpphttp::ParseMultipart(body, boundary)` to parse `multipart/form-data` form fields and uploaded files into `std::vector<cpphttp::MultipartPart>`:
 
 ```cpp
-#include "cpphttp.hpp"
-
-int main() {
-    cpphttp::HttpServer server(8080);
-
-    // 1. Global rate limiting (applies to all routes)
-    // Limits each client IP to at most 100 requests every 60 seconds
-    server.Use(cpphttp::RateLimiter(100, std::chrono::seconds(60)));
-
-    // 2. Scoped rate limiting (applies only to paths starting with "/api/login")
-    // Stricter limits for login endpoints: max 5 attempts per minute
-    server.Use("/api/login", cpphttp::RateLimiter(5, std::chrono::seconds(60)));
-
-    server.Get("/api/resource", [](const cpphttp::HttpRequest& req) {
-        return cpphttp::HttpResponse::Plain("Success!");
-    });
-
-    server.Start();
-}
-```
-
-### 4. CORS Middleware
-
-`cpp-http` provides a built-in configurable `Cors` middleware class to handle Cross-Origin Resource Sharing (CORS).
-
-It automatically intercepts preflight `OPTIONS` requests and returns a `204 No Content` response with the appropriate `Access-Control-Allow-*` headers. For actual requests, it injects the necessary CORS headers into the final response.
-
-```cpp
-#include "cpphttp.hpp"
-
-int main() {
-    cpphttp::HttpServer server(8080);
-
-    // Configure CORS settings
-    cpphttp::CorsConfig cors_config;
-    cors_config.allow_origin = "https://example.com";
-    cors_config.allow_credentials = true;
-    cors_config.expose_headers = {"X-Custom-Header"};
-    
-    // 1. Global CORS (applies to all routes)
-    // server.Use(cpphttp::Cors(cors_config));
-
-    // 2. Scoped CORS (applies only to paths starting with "/api")
-    server.Use("/api", cpphttp::Cors(cors_config));
-
-    server.Get("/api/data", [](const cpphttp::HttpRequest& req) {
-        return cpphttp::HttpResponse::Plain("Data with CORS");
-    });
-
-    server.Start();
-}
-```
-
-## TCP Defragmentation & Pipelining
-
-In TCP connections, data packets can arrive fragmented (broken into multiple chunks) or coalesced (multiple requests sent sequentially in one TCP stream, known as HTTP pipelining). `cpp-http` handles both scenarios automatically:
-
-1. **Fragmentation Protection:**
-   The server buffers incoming bytes inside an internal session buffer. It searches for the header terminator (`\r\n\r\n`). If not found, it waits for more TCP packets. Once the header is found, it extracts `Content-Length`. If the buffered data is smaller than the body size, it defers routing and waits for more packet events.
-   
-2. **Pipelining Support:**
-   After a route callback is executed and the response is sent, the server clears only the processed request block from the session buffer, leaving subsequent HTTP requests untouched in the queue:
-   ```cpp
-   buffer.erase(buffer.begin(), buffer.begin() + body_start_idx + content_length);
-   ```
-
-## Routing and 404 Handler
-
-When a client sends a request, the server maps the HTTP method and path into a routing key: `Method:Path` (e.g., `GET:/api/users`). 
-
-If no route exists in the routing map matching the incoming key, `cpp-http` automatically generates and returns a standard plain-text 404 response:
-
-```cpp
-HttpResponse not_found;
-not_found.status_code = 404;
-not_found.status_message = "Not Found";
-not_found.headers["Content-Type"] = "text/plain";
-not_found.body = "404 - Route not found.";
-```
-
-## Multi-Threaded Safety
-
-`HttpServer` dispatches incoming data to a worker pool provided by `cpp-tcpnet`. The worker pool uses **session-affinity hashing** — all packets for a given TCP connection are always routed to the same worker thread. This guarantees in-order delivery per connection while still processing different connections in parallel across all available CPU cores.
-
-Route callbacks may execute concurrently across connections, so:
-- Route callbacks **must be thread-safe** with respect to any shared state.
-- Protect access to global variables or shared resources using synchronization primitives (e.g., `std::mutex`, `std::atomic`):
-
-```cpp
-#include <mutex>
-
-std::mutex db_mutex;
-int user_count = 0;
-
-server.Post("/register", [](const cpphttp::HttpRequest& req) {
-    std::lock_guard<std::mutex> lock(db_mutex);
-    user_count++;
-    // safely perform modifications...
-});
-```
-
-## HTTP Streaming
-
-`cpp-http` supports streaming for both large **uploads** (server-side) and large **downloads** (client-side), allowing data to be processed incrementally without buffering the entire payload in memory.
-
-### Server-Side: `AddStreamRoute`
-
-Register a streaming upload route using `AddStreamRoute`. The handler is invoked **incrementally** for each received chunk. When `is_final` is `true`, the complete body has been received and you should return your final `HttpResponse`:
-
-```cpp
-#include "cpphttp.hpp"
-#include <iostream>
-
-int main() {
-    cpphttp::HttpServer server(8080);
-
-    // Accumulate the total bytes received across chunks
-    server.AddStreamRoute("POST", "/upload",
-        [](const cpphttp::HttpRequest& req,
-           const std::string& chunk,
-           bool is_final) -> std::optional<cpphttp::HttpResponse> {
-
-            std::cout << "Received chunk of " << chunk.size() << " bytes\n";
-
-            if (is_final) {
-                // Return the response only when all data has arrived
-                return cpphttp::HttpResponse::Plain("Upload complete!");
-            }
-            return std::nullopt; // Signal: keep streaming
-        });
-
-    server.Start();
-    // ...
-}
-```
-
-Key points:
-- Supports both `Content-Length` and **Chunked Transfer Encoding** (`Transfer-Encoding: chunked`) upload bodies.
-- The handler signature is `std::optional<HttpResponse>(const HttpRequest&, const std::string& chunk, bool is_final)`.
-- Returning `std::nullopt` tells the server to continue accumulating; returning a value sends the response and closes the stream.
-- Bodies exceeding `SetMaxBodySize` automatically return `413 Payload Too Large`.
-
-### Client-Side: Streaming Downloads (`GetStream` / `PostStream`)
-
-Use `GetStream` or `PostStream` to receive large responses incrementally instead of buffering the full body:
-
-```cpp
-cpphttp::HttpClient client("127.0.0.1", 8080);
-
-// Stream a large file download chunk-by-chunk
-cpphttp::HttpResponse res = client.GetStream(
-    "/large-file",
-    [](const cpphttp::HttpResponse& partial_res,
-       const std::string& chunk,
-       bool is_final) {
-        std::cout << "Got " << chunk.size() << " bytes";
-        if (is_final) std::cout << " (final)";
-        std::cout << "\n";
-    });
-
-std::cout << "Status: " << res.status_code << "\n";
-```
-
-### Client-Side: Streaming Uploads (`PostStreamAsync` / `PutStreamAsync`)
-
-For large uploads, use the async stream upload API. Provide a `stream_provider` callback that returns the next chunk of data to send, and a `content_length` for the `Content-Length` header (or use chunked encoding via headers):
-
-```cpp
-cpphttp::HttpClient client("127.0.0.1", 8080);
-
-// Stream a 10MB upload in 1MB chunks
-std::string large_data(10 * 1024 * 1024, 'X');
-size_t offset = 0;
-const size_t chunk_size = 1024 * 1024;
-
-auto future = client.PostStreamAsync(
-    "/upload",
-    {/* headers */},
-    [&](size_t /*hint*/) -> std::string {
-        if (offset >= large_data.size()) return ""; // Signal EOF
-        size_t take = std::min(chunk_size, large_data.size() - offset);
-        std::string chunk = large_data.substr(offset, take);
-        offset += take;
-        return chunk;
-    },
-    large_data.size() // Content-Length
-);
-
-cpphttp::HttpResponse res = future.get();
-std::cout << "Upload status: " << res.status_code << "\n";
-```
-
-The `PutStreamAsync` API is identical but sends an HTTP `PUT` request.
-
-## Multipart Form-Data Parsing
-
-`cpp-http` provides a `ParseMultipart` utility to handle file uploads and form-data. It splits the request body based on the boundary token extracted from the `Content-Type` header:
-
-```cpp
-#include "cpphttp.hpp"
-
 server.Post("/upload", [](const cpphttp::HttpRequest& request) {
-    // 1. Get multipart boundary from Content-Type header
     std::string ct = request.GetHeader("Content-Type");
     size_t boundary_pos = ct.find("boundary=");
     if (boundary_pos == std::string::npos) {
@@ -342,398 +74,635 @@ server.Post("/upload", [](const cpphttp::HttpRequest& request) {
     }
     std::string boundary = ct.substr(boundary_pos + 9);
 
-    // 2. Parse request body
-    std::vector<cpphttp::MultipartPart> parts = cpphttp::ParseMultipart(request.body, boundary);
-    
+    auto parts = cpphttp::ParseMultipart(request.body, boundary);
     for (const auto& part : parts) {
-        std::cout << "Part Name: " << part.name << "\n";
+        std::cout << "Part: " << part.name;
         if (!part.filename.empty()) {
-            std::cout << "Uploaded File: " << part.filename << " (" << part.content_type << ")\n";
-            // part.data contains raw file content
+            std::cout << " (file=" << part.filename
+                      << ", type=" << part.content_type << ")";
         }
+        std::cout << " size=" << part.data.size() << "\n";
     }
-
     return cpphttp::HttpResponse::Plain("Upload completed!");
 });
 ```
 
-## Serving Static Files
+---
 
-`cpp-http` provides a convenient built-in mechanism to serve an entire directory of static files using `HttpServer::StaticDir`:
+## Middleware Pipeline
 
-```cpp
-server.StaticDir(const std::string &route_prefix, const std::string &directory_path, bool spa_mode = false);
-```
+Middleware callbacks run sequentially before route matching or WebSocket upgrades. Each middleware has signature `bool(HttpRequest& request, HttpResponse& response)`. Returning `true` continues the pipeline; returning `false` short-circuits immediately and sends `response` to the client.
 
-- **`route_prefix`**: The HTTP route prefix under which static files will be served (e.g., `/static` or `/assets`).
-- **`directory_path`**: The local directory containing the static assets.
-- **`spa_mode`**: (Optional) If set to `true`, enables Single Page Application (SPA) fallback routing. Any request that does not match an existing file will automatically fall back to serving the `index.html` at the root of the `directory_path`.
+When middlewares return `true`, any headers or `multi_headers` they added to `response` are automatically merged into the final route or WebSocket upgrade response (without overwriting headers explicitly set by the route handler).
 
-### Example Usage
+### Global and Path-Scoped Middleware
 
 ```cpp
-#include "cpphttp.hpp"
-#include <iostream>
+// 1. Global middleware (runs on every dispatched request)
+server.Use([](cpphttp::HttpRequest& request, cpphttp::HttpResponse& response) {
+    response.headers["X-Frame-Options"] = "DENY";
+    return true;
+});
 
-int main() {
-    cpphttp::HttpServer server(8080);
-
-    // Serve files in the "public" local directory under "/static"
-    // For example:
-    // - Local file: "public/index.html" -> URL: "http://localhost:8080/static/index.html"
-    // - Local file: "public/css/style.css" -> URL: "http://localhost:8080/static/css/style.css"
-    server.StaticDir("/static", "./public");
-
-    server.Start();
-    // Wait...
-}
+// 2. Path-scoped middleware (matches paths starting with "/api")
+server.Use("/api", [](cpphttp::HttpRequest& request,
+                      cpphttp::HttpResponse& response) {
+    if (request.GetHeader("Authorization") != "secret-token") {
+        response = cpphttp::HttpResponse::Plain("Unauthorized", 401);
+        return false; // Abort pipeline
+    }
+    return true;
+});
 ```
 
-### Features & Security
-- **Automatic MIME-type mapping:** The server automatically determines and sets the correct `Content-Type` header based on the file extension (supporting common formats like `.html`, `.css`, `.js`, `.json`, `.png`, `.jpg`/`.jpeg`, `.gif`, `.svg`, `.txt`, `.ico`, `.xml`, and `.pdf`).
-- **Path Traversal Protection:** The routing engine automatically sanitizes `.` and `..` path segments, ensuring clients cannot read files outside of the registered directory.
-- **Directory Index Serving:** Requests attempting to load a directory will automatically serve the `index.html` within that directory if it exists.
-- **Single Page Application (SPA) Fallback:** By enabling the `spa_mode` flag, requests to virtual routes that don't match any static file will automatically serve the root `index.html`. This ensures that your client-side JavaScript router takes control for unhandled backend paths.
-- **Compression & HEAD Support:** Static files automatically benefit from standard features like transparent Zstandard, Brotli, and Gzip compression and automatic `HEAD` method fallback.
-- **HTTP Range Requests (Progressive Loading):** Supports standard `Range` headers (e.g. `bytes=START-END` or `bytes=START-`). It responds with `206 Partial Content` and serves only the requested sub-range, along with `Content-Range`, `Content-Length`, and `Accept-Ranges: bytes` headers. This allows media players to progressively stream and seek through video or audio files directly from the static directory. If the requested range is out-of-bounds, the server returns `416 Range Not Satisfiable`.
+> **Note:** Path-scoped middleware uses a prefix check (`req.path.rfind(path_prefix, 0) == 0`). For example, `"/api"` matches `"/api/users"` and `"/apiv2"`; use `"/api/"` if you want to restrict strictly to the `/api/` subtree.
 
+> **Warning:** Streaming upload routes registered via `PostStream` or `PutStream` are dispatched incrementally as headers arrive and **bypass** the `middlewares_` pipeline. Validate authentication/headers directly inside your `StreamHandler` when `chunk` arrives or on the first invocation.
 
-## Response Caching
+---
 
-To optimize server performance, `cpp-http` provides a `ResponseCache` utility to cache handler responses. It is implemented as a wrapper around route handlers, which intercepts request processing to serve cached responses on hits, and caches new responses on misses.
+## CORS Middleware
 
-### Key Characteristics:
-- **Scope**: Caches only `GET` requests returning a `200 OK` status.
-- **Exclusions**: Skips file-based responses (`is_file == true`) to prevent loading large static files into RAM.
-- **Cache Key**: Generated using the request path combined with normalized (sorted) query parameters to ensure consistency.
-- **Lifetime**: Uses `std::shared_ptr` internals, meaning cached state is safely preserved across asynchronous worker threads.
-- **Privacy**: Requests with `Authorization` or `Cookie` headers bypass the cache; responses with `Set-Cookie` or `Cache-Control: no-store`/`private` are not stored.
-- **Size**: Holds at most `max_entries` responses (second constructor argument, default 1024), evicting the oldest first.
+`cpphttp::Cors` is a built-in middleware for Cross-Origin Resource Sharing. It injects `Access-Control-Allow-*` and `Access-Control-Expose-Headers` headers, and automatically intercepts `OPTIONS` preflight requests with a `204 No Content` response.
 
-### Example Usage:
+### Minimal Example
 
-```cpp
-#include "cpphttp.hpp"
-
-int main() {
-    cpphttp::HttpServer server(8080);
-    
-    // Create a response cache with a default 10-second TTL
-    cpphttp::ResponseCache cache(std::chrono::seconds(10));
-
-    // Wrap a route handler to cache its response for the default duration
-    server.Get("/time", cache.Wrap([](const cpphttp::HttpRequest& req) {
-        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        return cpphttp::HttpResponse::Plain("Current time: " + std::string(std::ctime(&now)));
-    }));
-
-    // Wrap with a custom cache duration (e.g. 5 seconds)
-    server.Get("/fast-expire", cache.Wrap([](const cpphttp::HttpRequest& req) {
-        return cpphttp::HttpResponse::Plain("This cache expires fast!");
-    }, std::chrono::seconds(5)));
-
-    server.Start();
-}
-```
-
-## Transparent HTTP Compression (Zstandard, Brotli, Gzip)
-
-To optimize network bandwidth, `cpp-http` supports automatic transparent compression and decompression out-of-the-box:
-
-- **Supported Encodings:** Zstandard (`zstd`), Brotli (`br`), and Gzip (`gzip`).
-- **Negotiation Priority:** The server negotiates the encoding using the client's `Accept-Encoding` header (respecting quality weights `q=`). If multiple algorithms are supported, the server prioritizes them in the following order: `zstd` > `br` > `gzip` > `identity` (no compression).
-- **Client-Side:** The `HttpClient` advertises `Accept-Encoding: zstd, br, gzip` by default. If the server responds with a compressed encoding, the client transparently decompresses the body.
-- **Server-Side:** If the client indicates support for any of the compression schemes, the `HttpServer` compresses responses transparently before sending.
-- **Static File Serving:** Static files mapped using `StaticDir` (or handler responses setting `is_file = true` on `200 OK`) automatically benefit from dynamic on-the-fly compression if they match the MIME-type and minimum payload size requirements.
-
-### Configuring Compression Settings and Filters
-
-Developers can configure quality levels, size limits, and control which payloads are compressed:
-
-#### 1. Quality & Level Settings
-
-Adjusting compression settings dynamically on the `HttpServer` instance. Setting out-of-bounds levels throws a `std::invalid_argument` exception:
-
-| Algorithm | Method | Default | Valid Range | Details |
-| :--- | :--- | :--- | :--- | :--- |
-| **Zstandard** | `SetZstdCompressionLevel(int level)` | `3` | `[ZSTD_minCLevel(), ZSTD_maxCLevel()]` (typically `[-5, 22]`) | High-speed compression with excellent ratios |
-| **Brotli** | `SetBrotliQuality(int quality)` | `4` | `[0, 11]` | Highly optimized web compression (quality 4-6 is ideal for dynamic content) |
-| **Gzip** | `SetGzipCompressionLevel(int level)` | `-1` (`Z_DEFAULT_COMPRESSION`) | `[-1, 9]` | Standard compression compatibility |
-
-#### 2. Size Threshold & MIME Filters
-
-To optimize CPU performance and prevent redundant processing:
-- **Min Size Limit:** Only payloads (and files) whose size is greater than or equal to a minimum threshold are compressed. The default limit is `1024` bytes. You can change this using `SetMinCompressionSize(size_t bytes)`.
-- **MIME Filtering (Exclusion List):** Compression is active by default for all assets (HTML, CSS, JS, JSON, XML, SVG, YAML, WASM, Fonts, etc.). However, known pre-compressed media or container types (such as JPEGs, PNGs, MP4s, ZIP/tar archives, PDFs, or generic `application/octet-stream` binary streams) are automatically bypassed.
-
-Example of adjusting compression settings:
 ```cpp
 cpphttp::HttpServer server(8080);
 
-// Adjust quality levels
+cpphttp::CorsConfig cors_config;
+cors_config.allow_origin = "https://example.com";
+cors_config.allow_credentials = true;
+cors_config.expose_headers = {"X-Custom-Header"};
+
+// Apply globally or scoped to a prefix
+server.Use("/api", cpphttp::Cors(cors_config));
+
+server.Get("/api/data", [](const cpphttp::HttpRequest& req) {
+    return cpphttp::HttpResponse::Plain("Data with CORS");
+});
+```
+
+### `CorsConfig` Options
+
+| Field | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `allow_origin` | `std::string` | `"*"` | Value for `Access-Control-Allow-Origin` |
+| `allow_methods` | `std::vector<std::string>` | *See below* | Joined into `Access-Control-Allow-Methods` on `OPTIONS` preflight |
+| `allow_headers` | `std::vector<std::string>` | `{"*"}` | Joined into `Access-Control-Allow-Headers` on `OPTIONS` preflight |
+| `expose_headers` | `std::vector<std::string>` | `{}` | Joined into `Access-Control-Expose-Headers` when non-empty |
+| `allow_credentials` | `bool` | `false` | Sets `Access-Control-Allow-Credentials: true` when enabled |
+| `max_age` | `std::chrono::seconds` | `86400s` | Sets `Access-Control-Max-Age` (24h) on `OPTIONS` preflight when `> 0` |
+
+Default `allow_methods`:
+```cpp
+{"GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"}
+```
+
+> **Warning:** Browsers reject `Access-Control-Allow-Credentials: true` when `Access-Control-Allow-Origin` is `"*"`. Whenever you set `allow_credentials = true`, set `allow_origin` to an explicit origin (such as `"https://app.example.com"`).
+
+---
+
+## Fixed-Window Rate Limiting
+
+`cpphttp::RateLimiter` is a thread-safe middleware that limits requests per client IP (`HttpRequest::client_ip`) over a **fixed time window** starting at the client's first request in that window. When a client exceeds `max_requests` within `window_duration`, `RateLimiter` aborts the pipeline with `429 Too Many Requests` and sets `Retry-After` to `window_duration.count()`.
+
+### Minimal Example
+
+```cpp
+cpphttp::HttpServer server(8080);
+
+// Global limit: 100 requests per 60 seconds per IP
+server.Use(cpphttp::RateLimiter(100, std::chrono::seconds(60)));
+
+// Stricter scoped limit on login endpoints: 5 requests per 60 seconds per IP
+server.Use("/api/login", cpphttp::RateLimiter(5, std::chrono::seconds(60)));
+```
+
+### Proxy Headers (`SetTrustProxyHeaders`)
+
+By default, `HttpRequest::client_ip` is the underlying socket peer IP (`transport_->GetPeerAddress(session_id).ip`). If your server sits behind a trusted reverse proxy that sets `X-Forwarded-For`, enable proxy header resolution so `client_ip` uses the first address in `X-Forwarded-For`:
+
+```cpp
+server.SetTrustProxyHeaders(true); // Default: false
+```
+
+| Method | Default | Behavior |
+| :--- | :--- | :--- |
+| `SetTrustProxyHeaders(bool trust)` | `false` | When `true`, extracts the first comma-separated IP from `X-Forwarded-For`; falls back to peer IP if absent |
+| `RateLimiter(size_t max_requests, std::chrono::seconds window_duration)` | — | Shared-state (`std::shared_ptr`) middleware safe across all worker threads |
+
+> **Warning:** Never call `SetTrustProxyHeaders(true)` when clients can reach `cpp-http` directly. Any client could spoof `X-Forwarded-For` to bypass `RateLimiter` completely.
+
+---
+
+## Response Caching
+
+`cpphttp::ResponseCache` wraps individual `RouteHandler` callbacks to cache `GET` `200 OK` responses in memory with a configurable TTL and bounded capacity. Because `ResponseCache` shares state via `std::shared_ptr`, it is safe across all worker threads.
+
+### Minimal Example
+
+```cpp
+cpphttp::HttpServer server(8080);
+
+// Default TTL: 10 seconds, max_entries: 1024 (default)
+cpphttp::ResponseCache cache(std::chrono::seconds(10));
+
+server.Get("/time", cache.Wrap([](const cpphttp::HttpRequest& req) {
+    auto now = std::chrono::system_clock::to_time_t(
+        std::chrono::system_clock::now());
+    return cpphttp::HttpResponse::Plain(
+        "Current time: " + std::string(std::ctime(&now)));
+}));
+
+// Override TTL per route (5 seconds)
+server.Get("/fast-expire", cache.Wrap([](const cpphttp::HttpRequest& req) {
+    return cpphttp::HttpResponse::Plain("Short-lived cached response");
+}, std::chrono::seconds(5)));
+```
+
+### Configuration and Caching Rules
+
+| Property | Behavior |
+| :--- | :--- |
+| Constructor | `ResponseCache(std::chrono::seconds default_duration, size_t max_entries = 1024)` (0 is clamped to 1) |
+| Cache Key | Percent-escaped `req.path` + sorted `req.query_params` (`?k1=v1&k2=v2`) |
+| Request Bypass | Non-`GET` requests, or requests with `Authorization` or `Cookie` headers bypass the cache |
+| Storage Exclusions | Only `status_code == 200` and `!is_file` responses are stored; responses with `Set-Cookie` (in `headers` or `multi_headers`) or `Cache-Control: no-store` / `private` are never stored |
+| Eviction | Expired entries are lazily pruned on lookup; when `size >= max_entries`, oldest entries are evicted first |
+
+> **Tip:** `ResponseCache` stores uncompressed `HttpResponse` objects before `HttpServerImpl` performs per-request `Accept-Encoding` negotiation, so different clients requesting `zstd`, `br`, `gzip`, or `identity` all benefit from the same cached handler result.
+
+---
+
+## Transparent HTTP Compression
+
+`cpp-http` includes built-in transparent compression and decompression for **Zstandard (`zstd`)**, **Brotli (`br`)**, and **Gzip (`gzip`)**.
+
+- **Server-side negotiation:** Inspects `Accept-Encoding` (including `q=` weights and `*`) and prefers `zstd` > `br` > `gzip` > `identity`.
+- **Client-side advertisement & decompression:** `HttpClient` sends `Accept-Encoding: zstd, br, gzip` by default and transparently decompresses responses matching `Content-Encoding`.
+- **Static & file responses:** Responses with `is_file == true` and `status_code == 200` are compressed on the fly in chunks via `StreamCompressor` using `Transfer-Encoding: chunked` (when `request.version != "HTTP/1.0"`).
+
+### Compression Options
+
+| Method | Default | Valid Range | Notes |
+| :--- | :--- | :--- | :--- |
+| `SetZstdCompressionLevel(int level)` | `3` | `[ZSTD_minCLevel(), ZSTD_maxCLevel()]` | Throws `std::invalid_argument` if out of range |
+| `SetBrotliQuality(int quality)` | `4` | `[0, 11]` | Throws `std::invalid_argument` if out of range |
+| `SetGzipCompressionLevel(int level)` | `-1` (`Z_DEFAULT_COMPRESSION`) | `[-1, 9]` | Throws `std::invalid_argument` if out of range |
+| `SetMinCompressionSize(size_t size)` | `1024` bytes | `>= 0` | Payloads/files smaller than this threshold are sent uncompressed |
+
+```cpp
+cpphttp::HttpServer server(8080);
 server.SetZstdCompressionLevel(5);
 server.SetBrotliQuality(5);
-server.SetGzipCompressionLevel(1); // 1 = Z_BEST_SPEED
-
-// Adjust minimum size threshold to 512 bytes
+server.SetGzipCompressionLevel(1); // Fast gzip
 server.SetMinCompressionSize(512);
+```
+
+### MIME Filtering and `Vary` Header
+
+By default, `is_compressible_mimetype` compresses responses (including when `Content-Type` is empty) except known pre-compressed or binary container types:
+
+- **Excluded images:** `image/jpeg`, `image/jpg`, `image/png`, `image/gif`, `image/webp`, `image/heic`, `image/tiff`, `image/x-icon`, `image/bmp` (`image/svg+xml` *is* compressed).
+- **Excluded media:** all `video/*` and `audio/*` MIME types.
+- **Excluded archives & binary types:** `application/zip`, `application/gzip`, `application/x-gzip`, `application/x-bzip2`, `application/x-tar`, `application/x-rar-compressed`, `application/x-7z-compressed`, `application/x-compress`, `application/pdf`, `application/octet-stream`.
+
+Responses that already define `Content-Encoding` are left untouched. Eligible responses automatically receive `Vary: Accept-Encoding` (or have `Accept-Encoding` appended to an existing `Vary` header if not already present or `*`).
+
+> **Note:** On the client, `zstd_decompress`, `brotli_decompress`, and `gzip_decompress` enforce `HttpClient::GetMaxBodySize()` (default 10 MB) on the **decompressed** output size to protect against compression bombs, throwing `std::runtime_error` if exceeded.
+
+> **Warning:** `206 Partial Content` range responses and `HTTP/1.0` file transfers are never compressed by the server.
+
+---
+
+## HTTP Streaming
+
+Use streaming APIs when handling large uploads or downloads so payloads do not have to be buffered completely in RAM.
+
+### Server-Side Streaming Uploads (`PostStream`, `PutStream`)
+
+Register streaming upload endpoints using `server.PostStream` or `server.PutStream` (the lower-level `AddStreamRoute` helper is private to `HttpServerImpl`). The `StreamHandler` callback signature is:
+
+```cpp
+using StreamHandler = std::function<std::optional<HttpResponse>(
+    const HttpRequest& req, const std::string& chunk, bool is_final)>;
+```
+
+Return `std::nullopt` to keep receiving chunks, and return an `HttpResponse` once `is_final == true` (or early to reject/respond).
+
+```cpp
+server.PostStream("/upload",
+    [](const cpphttp::HttpRequest& req,
+       const std::string& chunk,
+       bool is_final) -> std::optional<cpphttp::HttpResponse> {
+        if (!chunk.empty()) {
+            // Write chunk incrementally to disk or processor...
+        }
+        if (is_final) {
+            return cpphttp::HttpResponse::Plain("Upload complete!");
+        }
+        return std::nullopt;
+    });
+```
+
+> **Warning:**
+> 1. Returning an `HttpResponse` before the full request body has arrived (`is_final == false`) triggers an early response: the server forces `Connection: close`, discards remaining wire bytes, and closes the connection to prevent HTTP request smuggling.
+> 2. Returning `std::nullopt` when `is_final == true` produces `500 Internal Server Error`.
+> 3. For `Transfer-Encoding: chunked` uploads on stream routes, chunks exceeding `SetMaxBodySize` immediately return `413 Payload Too Large` and close the connection.
+
+### Client-Side Streaming Downloads (`GetStream` and `PostStream`)
+
+Use `GetStream` or `PostStream` to process response body chunks as they arrive:
+
+```cpp
+cpphttp::HttpClient client("127.0.0.1", 8080);
+
+cpphttp::HttpResponse res = client.GetStream(
+    "/large-file",
+    [](const cpphttp::HttpResponse& partial_res,
+       const std::string& chunk,
+       bool is_final) {
+        if (!chunk.empty()) {
+            // Consume chunk (partial_res holds status_code and headers)
+        }
+        if (is_final) {
+            std::cout << "Download complete (status "
+                      << partial_res.status_code << ")\n";
+        }
+    });
+```
+
+> **Note:** In streaming download mode (`on_chunk` provided), `HttpClient` skips the `Content-Length > max_body_size_` upfront rejection so arbitrarily large files can be streamed, and delivers raw body chunks without buffering the full body in `res.body`.
+
+### Client-Side Streaming Uploads (`PostStreamAsync` and `PutStreamAsync`)
+
+Supply a `stream_provider` callback `std::string(size_t ask_size)` and either an explicit `content_length` or `0` (or `Transfer-Encoding: chunked` in headers) for chunked transfer encoding. Return an empty string `""` from `stream_provider` to signal EOF.
+
+{% raw %}
+```cpp
+cpphttp::HttpClient client("127.0.0.1", 8080);
+
+std::string large_data(10 * 1024 * 1024, 'X');
+size_t offset = 0;
+
+// Fixed Content-Length upload (pass 0 as content_length for chunked encoding)
+auto future = client.PostStreamAsync(
+    "/upload",
+    {{"Content-Type", "application/octet-stream"}},
+    [&](size_t ask_size) -> std::string {
+        if (offset >= large_data.size()) return "";
+        size_t take = std::min(ask_size, large_data.size() - offset);
+        std::string chunk = large_data.substr(offset, take);
+        offset += take;
+        return chunk;
+    },
+    large_data.size());
+
+cpphttp::HttpResponse res = future.get();
+```
+{% endraw %}
+
+`HttpClient` automatically throttles outbound streaming chunks using `GetTransferSubscriber()` so in-flight bytes stay bounded by `max_outbound_buffer_size / 2` (minimum `65536` bytes).
+
+---
+
+## Static Files and SPA Mode
+
+`HttpServerImpl::StaticDir` serves a local directory asynchronously from disk without loading entire files into memory.
+
+```cpp
+void StaticDir(const std::string& route_prefix,
+               const std::string& directory_path,
+               bool spa_mode = false);
+```
+
+```cpp
+cpphttp::HttpServer server(8080);
+
+// Serve ./public under /static
+server.StaticDir("/static", "./public");
+
+// Serve a Single Page Application under /app with fallback to ./dist/index.html
+server.StaticDir("/app", "./dist", true);
+```
+
+### Capabilities and Security
+
+- **MIME-type mapping (`GetMimeType`):** Automatically sets `Content-Type` for 50+ extensions (`.html`, `.css`, `.js`/`.mjs`, `.json`, `.map`, `.svg`, `.png`, `.jpg`/`.jpeg`, `.webp`, `.gif`, `.ico`, `.wasm`, `.woff`/`.woff2`/`.ttf`/`.otf`, `.pdf`, `.mp4`, `.webm`, `.mp3`, `.wav`, `.zip`, `.gz`, `.yaml`, `.md`, etc.), defaulting unknown extensions to `application/octet-stream`.
+- **Path traversal protection:** Canonicalizes both the root directory and target file path with `std::filesystem::weakly_canonical` and verifies the target stays strictly within the root directory.
+- **Directory index:** Requests resolving to a directory automatically serve `<dir>/index.html` if present.
+- **SPA fallback (`spa_mode = true`):** Missing files or traversal rejections fall back to `<directory_path>/index.html` (`200 OK`) so client-side routers can handle virtual URLs.
+- **Byte-range requests:** Sets `Accept-Ranges: bytes` and handles `Range: bytes=START-END`, `bytes=START-`, and `bytes=-SUFFIX` with `206 Partial Content` and `Content-Range` (or `416 Range Not Satisfiable` when out of bounds).
+- **Async chunked pumping & compression:** `HttpServerImpl::PumpFileTransfer` streams file chunks bounded by `ConnectionProfile::max_outbound_buffer_size / 2` and `send_chunk_size`, with on-the-fly compression for eligible `200 OK` files.
+
+> **Tip:** To return a custom file manually from a regular route handler with the same zero-memory-bloat streaming and compression pipeline, populate `res.is_file = true`, `res.file_path`, `res.headers["Content-Type"]`, and `res.headers["Content-Length"]` (plus optional `res.file_offset` / `res.file_length` for partial transfers).
+
+---
+
+## WebSocket Support
+
+`cpp-http` implements RFC 6455 WebSocket upgrades, frame masking/unmasking, message fragmentation/reassembly, and `Ping`/`Pong`/`Close` control frames on both server and client.
+
+### Server-Side WebSockets
+
+Register WebSocket endpoints with `server.WebSocket(path, behavior)`. Route patterns with `:param` and `*` are supported on WebSocket paths too.
+
+```cpp
+cpphttp::HttpServer server(8080);
+
+cpphttp::WebSocketBehavior ws_behavior;
+ws_behavior.on_open = [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
+    std::cout << "Opened session " << conn->GetSessionId() << "\n";
+};
+ws_behavior.on_message = [](std::shared_ptr<cpphttp::WebSocketConnection> conn,
+                            const std::string& msg) {
+    conn->Send("Echo: " + msg);
+};
+ws_behavior.on_binary = [](std::shared_ptr<cpphttp::WebSocketConnection> conn,
+                           const std::vector<uint8_t>& data) {
+    conn->SendBinary(data);
+};
+ws_behavior.on_close = [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
+    std::cout << "Closed session " << conn->GetSessionId() << "\n";
+};
+
+// Optional: customize TCP profile applied upon upgrade
+ws_behavior.connection_profile.idle_timeout = std::chrono::hours(2);
+
+server.WebSocket("/ws", std::move(ws_behavior));
+```
+
+`WebSocketConnection` methods:
+
+| Method | Description |
+| :--- | :--- |
+| `uint64_t GetSessionId() const` | Returns the connection's session ID |
+| `bool Send(const std::string& message)` | Sends a text frame (`opcode 0x01`) |
+| `bool SendBinary(const std::vector<uint8_t>& data)` | Sends a binary frame (`opcode 0x02`) |
+| `bool Ping(const std::string& payload = "")` | Sends a ping frame (`opcode 0x09`) |
+| `void Close(uint16_t status_code = 1000, const std::string& reason = "")` | Sends a close frame (`opcode 0x08`) |
+
+Default `WebSocketBehavior::connection_profile` sets `no_delay = true`, `keepalive_enabled = true` (`idle = 60s`, `interval = 15s`, `count = 4`), and `idle_timeout = 3600000ms` (1 hour).
+
+### Client-Side WebSockets (`WebSocketClient`)
+
+`WebSocketClient` connects to `ws://` and `wss://` URLs:
+
+```cpp
+cpphttp::WebSocketClient client;
+
+client.OnOpen([]() { std::cout << "Connected!\n"; });
+client.OnMessage([](const std::string& msg) {
+    std::cout << "Text: " << msg << "\n";
+});
+client.OnBinary([](const std::vector<uint8_t>& data) {
+    std::cout << "Binary: " << data.size() << "\n";
+});
+client.OnClose([](uint16_t code, const std::string& reason) {
+    std::cout << "Closed (" << code << "): " << reason << "\n";
+});
+
+if (client.Connect("ws://127.0.0.1:8080/ws")) { // default timeout: 5s
+    client.Send("Hello!");
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    client.Close(); // default status_code = 1000, reason = ""
+}
+```
+
+| Method | Default / Signature | Description |
+| :--- | :--- | :--- |
+| `Connect(url, timeout)` | `timeout = std::chrono::seconds(5)` | Parses `ws://`/`wss://`, opens TCP/TLS socket, validates `101` + `Sec-WebSocket-Accept` |
+| `Send(message)` / `SendBinary(data)` | — | Sends masked text or binary frame |
+| `Ping(payload)` | `payload = ""` | Sends masked ping frame |
+| `Close(status_code, reason)` | `status_code = 1000, reason = ""` | Sends close frame and waits up to `close_timeout` before disconnecting |
+| `Disconnect()` | — | Immediately closes socket and stops internal worker |
+| `SetTlsConfig(config)` / `SetAllowSelfSigned(allow)` | `verify_peer = true` | Configures TLS verification for `wss://` connections |
+| `SetMaxBodySize(size)` | `10 * 1024 * 1024` (10 MB) | Max incoming/reassembled WebSocket message size |
+| `SetMaxOutboundBufferSize(size)` | `10 * 1024 * 1024` (10 MB) | Max outbound send queue size on `cpptcpnet::TcpClient` |
+| `SetCloseTimeout(timeout)` | `std::chrono::milliseconds(1000)` | Wait duration for close handshake completion |
+
+> **Note:** Calling `Disconnect()` or `Close()` from inside a `WebSocketClient` callback (`OnMessage`, `OnClose`, etc.) is safe: `internal::CallbackScope` detects in-callback teardown and defers thread joining to avoid self-deadlock.
+
+---
+
+## TLS and Redirect Scoping
+
+### Server-Side TLS (`SslConfig` and QUIC Certificates)
+
+For `HttpServer` (TCP), configure `cpptcpnet::TcpListener::SslConfig` before calling `server.Start()`:
+
+```cpp
+cpptcpnet::TcpListener::SslConfig ssl_config;
+ssl_config.cert_file = "certs/server.crt";
+ssl_config.key_file = "certs/server.key";
+// Optional mutual TLS (mTLS):
+// ssl_config.ca_file = "certs/ca.crt";
+// ssl_config.require_client_cert = true;
+
+server.GetListener().EnableSSL(ssl_config);
+server.Start();
+```
+
+| `SslConfig` Field | Default | Description |
+| :--- | :--- | :--- |
+| `cert_file` / `key_file` | `""` | Server PEM certificate and private key paths |
+| `ca_file` | `""` | CA certificate file for verifying client certificates |
+| `require_client_cert` | `false` | Require and verify client certificates (mTLS) |
+| `verify_depth` | `-1` | Certificate chain verification depth (`-1` = OpenSSL default) |
+| `cipher_list` / `cipher_suites` | `""` | TLS 1.2 cipher list / TLS 1.3 cipher suites |
+| `min_tls_version` / `max_tls_version` | `-1` | Minimum / maximum TLS protocol version (`-1` = library default) |
+
+For `QuicHttpServer`, call `server.GetTransport()->GetServer().SetCertificate(cert_file, key_file)`. For `HybridHttpServer`, configure both transports (see [HTTP/3 and Hybrid Transports](#http3-and-hybrid-transports)).
+
+### Client-Side TLS (`ClientTlsConfig`)
+
+`HttpClient`, `HttpClientImpl<QuicClientTransport>`, and `WebSocketClient` share `cpphttp::ClientTlsConfig`. **Peer certificate and hostname verification are enabled by default (`verify_peer = true`).**
+
+| `ClientTlsConfig` Field | Default | Description |
+| :--- | :--- | :--- |
+| `verify_peer` | `true` | Verify server certificate chain and hostname/IP SAN |
+| `ca_file` | `""` | Path to trusted PEM CA file or self-signed server cert |
+| `ca_path` | `""` | Path to directory of hashed CA certificates |
+| `server_name` | `""` | Override SNI and expected certificate hostname (defaults to `host`) |
+| `client_cert_file` | `""` | Client PEM certificate path for mTLS |
+| `client_key_file` | `""` | Client private key path for mTLS |
+| `cipher_list` | `""` | OpenSSL cipher list (applied on TCP / WebSocket clients) |
+
+```cpp
+cpphttp::HttpClient client("127.0.0.1", 8443);
+
+// Option 1: Verify against explicit CA / pinned cert (Recommended)
+cpphttp::ClientTlsConfig tls;
+tls.ca_file = "certs/server.crt";
+tls.server_name = "localhost"; // override if SAN differs from connect host
+client.EnableSSL(tls);
+
+// Option 2: Explicitly opt out of verification for local dev self-signed certs
+// client.EnableSSL();
+// client.SetAllowSelfSigned(true);
+```
+
+> **Warning:** `SetAllowSelfSigned(true)` sets `verify_peer = false`, disabling certificate and hostname validation. Use `ca_file` in production or whenever testing with a known self-signed cert.
+
+### Redirect Behavior and Cross-Origin Scoping
+
+`HttpClientImpl` automatically follows `3xx` responses with a `Location` header (up to `SetMaxRedirects(int)`, default `5`) with strict security scoping:
+
+1. **Method rules:** `301`, `302`, and `303` downgrade `POST`/`PUT`/etc. to `GET` and clear the request body. `307` and `308` preserve the original HTTP method and body.
+2. **Scheme filtering:** Only relative paths (`/path`), protocol-relative URLs (`//host/path`), `http://`, and `https://` targets are followed.
+3. **No HTTPS → HTTP downgrade:** If the client is on HTTPS (`ssl_enabled_ == true`) and `Location` points to `http://`, the client refuses the downgrade and returns the `3xx` response directly.
+4. **Cross-origin credential & TLS scoping:** When redirecting to a different host, port, or scheme, `HttpClientImpl` opens a temporary client for the target origin and:
+   - Strips `Authorization`, `Proxy-Authorization`, and `Cookie` headers (`StripCredentialHeaders`).
+   - Copies CA/verification policy (`verify_peer`, `ca_file`, `ca_path`, `cipher_list`) **while clearing `server_name`, `client_cert_file`, and `client_key_file`** so mTLS client certificates and custom SNI names are never sent to third-party origins.
+
+---
+
+## HTTP/3 and Hybrid Transports
+
+When compiled with `CPPHTTP_ENABLE_QUIC` (enabled by default in `CMakeLists.txt`), `cpp-http` provides HTTP/3 (HTTP-over-QUIC) via `cpp-quic`.
+
+### Transport Aliases
+
+| Alias / Class | Underlying Transport | Protocol / Sockets |
+| :--- | :--- | :--- |
+| `cpphttp::HttpServer` | `TcpServerTransport` | TCP (HTTP/1.1 & HTTPS) |
+| `cpphttp::HttpClient` | `TcpClientTransport` | TCP (HTTP/1.1 & HTTPS client) |
+| `cpphttp::QuicHttpServer` | `QuicServerTransport` | UDP/QUIC (HTTP/3 & raw HTTP-over-QUIC) |
+| `cpphttp::HybridHttpServer` | `HybridServerTransport` | TCP (HTTPS) + UDP (HTTP/3) on the same port |
+| `cpphttp::HttpClientImpl<cpphttp::QuicClientTransport>` | `QuicClientTransport` | UDP/QUIC client |
+
+### Hybrid HTTP/3 Server
+
+`HybridHttpServer` binds both a TCP listener and a QUIC/UDP server to the same port, routing both protocols through one shared route table and middleware pipeline. By default, TCP responses automatically include `Alt-Svc: h3=":<port>"; ma=86400` (`server.SetAdvertiseAltSvc(bool)`, default `true`).
+
+```cpp
+uint16_t port = 4433;
+cpphttp::HybridHttpServer server(port);
+
+// 1. Configure TLS on the TCP listener
+cpptcpnet::TcpListener::SslConfig ssl_config;
+ssl_config.cert_file = "certs/server.crt";
+ssl_config.key_file = "certs/server.key";
+server.GetTransport()->GetTcpTransport().GetListener().EnableSSL(ssl_config);
+
+// 2. Configure certificates (and ALPN / QuicProfile) on the QUIC server
+server.GetTransport()->GetQuicTransport().GetServer().SetCertificate(
+    "certs/server.crt", "certs/server.key"
+);
+server.GetTransport()->GetQuicTransport().GetServer()
+    .SetAlpnProtos({"h3", "h3-29"});
+
+cppquic::QuicProfile qprofile = cppquic::QuicProfile::HighThroughput();
+server.SetQuicProfile(qprofile);
+
+// 3. Register routes shared by both TCP and QUIC
+server.Get("/hello", [](const cpphttp::HttpRequest& req) {
+    return cpphttp::HttpResponse::Plain("Hello over HTTPS or HTTP/3!");
+});
 
 server.Start();
 ```
 
-## HTTP Redirect Method Downgrade
+> **Note:** `HybridServerTransport` does not expose `GetListener()` directly on `HybridHttpServer` (unlike `HttpServer`). Access the TCP listener via `server.GetTransport()->GetTcpTransport().GetListener()` and the QUIC server via `server.GetTransport()->GetQuicTransport().GetServer()` (or `server.GetTransport()->GetServer()`).
 
-When the client performs redirect following (e.g. following a `302 Found` or `303 See Other` response status), it automatically downgrades `POST` requests to `GET` requests for the redirected URL. This aligns with standard web-browser redirection behavior.
-
-## WebSocket Support
-
-`cpp-http` provides comprehensive support for WebSockets, allowing you to build both WebSocket servers and clients using a clean, asynchronous event-driven API.
-
-### 1. Server-Side WebSocket Routing
-
-To handle WebSocket upgrades on the server, define a `WebSocketBehavior` struct specifying event callbacks, then register it using `server.WebSocket(...)`:
+### HTTP/3 Client (`QuicClientTransport`)
 
 ```cpp
-#include "cpphttp.hpp"
-#include <iostream>
+cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1", 4433);
+cpphttp::ClientTlsConfig tls;
+tls.ca_file = "certs/server.crt";
+client.EnableSSL(tls);
+client.SetTimeout(std::chrono::seconds(5));
+client.SetQuicProfile(cppquic::QuicProfile::HighThroughput());
 
-int main() {
-    cpphttp::HttpServer server(8080);
-
-    cpphttp::WebSocketBehavior ws_behavior;
-    
-    // Callback when a client completes the handshake and opens the connection
-    ws_behavior.on_open = [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
-        std::cout << "Client connected: session_id=" << conn->GetSessionId() << "\n";
-    };
-
-    // Callback when a text message frame is received
-    ws_behavior.on_message = [](std::shared_ptr<cpphttp::WebSocketConnection> conn, const std::string &msg) {
-        std::cout << "Received text: " << msg << "\n";
-        conn->Send("Echo: " + msg); // Echo the text message back to the client
-    };
-
-    // Callback when a binary message frame is received
-    ws_behavior.on_binary = [](std::shared_ptr<cpphttp::WebSocketConnection> conn, const std::vector<uint8_t> &data) {
-        std::cout << "Received binary frame of size: " << data.size() << " bytes\n";
-        conn->SendBinary(data); // Echo binary data back
-    };
-
-    // Callback when connection closes
-    ws_behavior.on_close = [](std::shared_ptr<cpphttp::WebSocketConnection> conn) {
-        std::cout << "Client disconnected\n";
-    };
-
-    // Register WebSocket route
-    server.WebSocket("/ws", std::move(ws_behavior));
-
-    server.Start();
-    // Wait...
-}
+cpphttp::HttpResponse res = client.Get("/hello");
 ```
 
-The server-side connection object (`WebSocketConnection`) provides helper methods to interact with the socket:
-* `bool Send(const std::string &message)`: Send a text frame.
-* `bool SendBinary(const std::vector<uint8_t> &data)`: Send a binary frame.
-* `bool Ping(const std::string &payload)`: Send a ping frame.
-* `void Close(uint16_t status_code, const std::string &reason)`: Send a close frame and shut down the connection.
+> **Tip:** When you call `SetQuicProfile(profile)` with `profile.initial_max_data >= 32 * 1024 * 1024`, `QuicServerTransport` and `QuicClientTransport` automatically raise `send_chunk_size` to `128 KB` to match high-throughput QUIC flow-control windows.
 
-### 2. Client-Side WebSocket (`WebSocketClient`)
+### Low-Level HTTP/3 and QPACK Helpers
 
-The library includes a dedicated client-side `WebSocketClient` class to connect to any WebSocket server (supporting both `ws://` and `wss://` protocols):
+`cpp-http` exposes RFC 9114 / RFC 9204 framing primitives under `cpphttp::qpack` and `cpphttp::http3`:
 
-```cpp
-#include "cpphttp.hpp"
-#include <iostream>
-#include <thread>
-
-int main() {
-    cpphttp::WebSocketClient client;
-
-    // Register event callbacks
-    client.OnOpen([]() {
-        std::cout << "Connected to server!\n";
-    });
-
-    client.OnMessage([](const std::string &msg) {
-        std::cout << "Received message: " << msg << "\n";
-    });
-
-    client.OnBinary([](const std::vector<uint8_t> &data) {
-        std::cout << "Received binary data of size: " << data.size() << " bytes\n";
-    });
-
-    client.OnClose([](uint16_t status_code, const std::string &reason) {
-        std::cout << "Closed connection: code=" << status_code << ", reason=" << reason << "\n";
-    });
-
-    // Connect asynchronously to WebSocket endpoint
-    if (client.Connect("ws://127.0.0.1:8080/ws")) {
-        client.Send("Hello from WebSocketClient!");
-        
-        // Sleep to allow background worker to process responses
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        
-        client.Close();
-    } else {
-        std::cerr << "Failed to connect to server\n";
-    }
-
-    return 0;
-}
-```
-
-The client-side `WebSocketClient` exposes:
-* `void OnOpen(WsConnectHandler handler)`: Sets callback for when connection opens.
-* `void OnMessage(WsMessageHandler handler)`: Sets callback for incoming text messages.
-* `void OnBinary(WsBinaryHandler handler)`: Sets callback for incoming binary data.
-* `void OnClose(WsCloseHandler handler)`: Sets callback for when connection closes.
-* `bool Connect(const std::string &url, std::chrono::milliseconds timeout)`: Initiates connection and performs handshake.
-* `bool Send(const std::string &message)`: Sends a text message.
-* `bool SendBinary(const std::vector<uint8_t> &data)`: Sends binary data.
-* `bool Ping(const std::string &payload)`: Sends a ping frame.
-* `void Close(uint16_t status_code, const std::string &reason)`: Closes the connection cleanly.
-* `void Disconnect()`: Immediately terminates connection.
-
-## HTTP/3 (HTTP-over-QUIC) & Hybrid Transports
-
-`cpp-http` provides comprehensive support for HTTP/3 (HTTP-over-QUIC) when compiled with QUIC enabled (`CPPHTTP_ENABLE_QUIC`). This includes dedicated HTTP/3 servers, HTTP/3 clients, and a dual TCP/UDP hybrid server model.
-
-### 1. Architecture & Transport Classes
-
-The library abstracts the network protocol via transport templates. The core server and client classes are `HttpServerImpl<Transport>` and `HttpClientImpl<Transport>`. 
-
-Depending on your compilation options, the following aliases are available:
-
-| Class / Type Alias | Underlying Transport | Protocol / socket |
-| :--- | :--- | :--- |
-| `HttpServer` | `TcpServerTransport` | TCP (Standard HTTP / HTTPS) |
-| `HttpClient` | `TcpClientTransport` | TCP (Standard HTTP / HTTPS client) |
-| `QuicHttpServer` | `QuicServerTransport` | UDP (HTTP/3 Server) |
-| `HybridHttpServer` | `HybridServerTransport` | TCP & UDP (Dual HTTPS & HTTP/3 Server) |
-
-### 2. Hybrid HTTP/3 Server
-
-A `HybridHttpServer` hosts both a standard TCP (HTTPS) listener and a UDP (QUIC) listener on the same port. 
-By default, the server automatically injects the `Alt-Svc` header into TCP responses to advertise HTTP/3 support to client browsers (e.g., `Alt-Svc: h3=":4433"`).
-
-#### Configuration Example
-
-Below is a demonstration of setting up a hybrid server with SSL certificates:
-
-```cpp
-#include "cpphttp.hpp"
-#include <iostream>
-
-int main() {
-    uint16_t port = 4433;
-    
-    try {
-        cpphttp::HybridHttpServer server(port);
-
-        // 1. Configure SSL/TLS certificates for HTTPS on the TCP listener
-        cpptcpnet::TcpListener::SslConfig ssl_config;
-        ssl_config.cert_file = "certs/server.crt";
-        ssl_config.key_file = "certs/server.key";
-
-        try {
-            server.GetTransport()->GetTcpTransport().GetListener().EnableSSL(ssl_config);
-            std::cout << "HTTPS enabled on TCP port." << std::endl;
-        } catch (const std::exception &e) {
-            std::cerr << "Warning: TCP HTTPS failed to start: " << e.what() << std::endl;
-        }
-
-        // 2. Configure the same certificates for the UDP/QUIC listener
-        try {
-            server.GetTransport()->GetQuicTransport().GetServer().SetCertificate(
-                "certs/server.crt", "certs/server.key"
-            );
-            std::cout << "Certificates loaded for QUIC server." << std::endl;
-        } catch (const std::exception &e) {
-            std::cerr << "Warning: QUIC cert configuration failed: " << e.what() << std::endl;
-        }
-
-        // 3. Register route handlers (shared by both TCP and QUIC listeners)
-        server.Get("/hello", [](const cpphttp::HttpRequest &req) {
-            return cpphttp::HttpResponse::Plain("Hello World over TCP or QUIC!");
-        });
-
-        // 4. (Optional) Control Alt-Svc headers
-        // server.SetAdvertiseAltSvc(false); // Disable Alt-Svc header advertisement
-
-        // 5. Start the server
-        server.Start();
-        std::cout << "Hybrid server running on port " << port << std::endl;
-        std::cin.get();
-        server.Stop();
-    } catch (const std::exception &e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-    }
-}
-```
-
-### 3. HTTP Client over QUIC
-
-You can make HTTP queries over QUIC using the client template instantiated with `QuicClientTransport`:
-
-```cpp
-#include "cpphttp.hpp"
-#include <iostream>
-
-int main() {
-    try {
-        // Instantiate the client with QuicClientTransport
-        cpphttp::HttpClientImpl<cpphttp::QuicClientTransport> client("127.0.0.1", 4433);
-        client.SetTimeout(std::chrono::seconds(5));
-
-        // Send a GET request
-        cpphttp::HttpResponse response = client.Get("/hello");
-
-        std::cout << "Status: " << response.status_code << " " << response.status_message << "\n";
-        std::cout << "Body: " << response.body << "\n";
-    } catch (const std::exception &e) {
-        std::cerr << "QUIC Client Exception: " << e.what() << std::endl;
-    }
-}
-```
-
-### 4. Low-Level HTTP/3 & QPACK Helpers
-
-`cpp-http` exposes internal helpers for HTTP/3 framing and QPACK header compression:
-- **`cpphttp::qpack`:** Methods like `Encode` and `Decode` for header compression, plus Huffman encoding/decoding.
-- **`cpphttp::http3`:** Methods like `EncodeVarint` and `DecodeVarint` for QUIC variable-length integers, and `ReconstructHttp11Request` for translating QUIC streams into standard request representations.
-
-## Internal Library Logging
-
-`cpp-http` provides a global logging API to capture internal diagnostics, warnings, and connection errors from `HttpClient` and `WebSocketClient`. By default, these logs are silent. You can register a custom logger callback to print or save these diagnostics.
-
-### Custom Logger Callback Registration
-
-Set a custom logger using `cpphttp::SetLogger()`:
-
-```cpp
-#include "cpphttp.hpp"
-#include <iostream>
-
-int main() {
-    // 1. Register a custom log handler callback
-    cpphttp::SetLogger([](cpphttp::LogSeverity severity, const std::string &className, const std::string &message) {
-        std::string level = "INFO";
-        if (severity == cpphttp::LogSeverity::Warning) level = "WARNING";
-        if (severity == cpphttp::LogSeverity::Error) level = "ERROR";
-
-        std::cout << "[HTTP-LIB][" << level << "][" << className << "] " << message << std::endl;
-    });
-
-    // 2. To disable internal logging at any time, pass nullptr
-    cpphttp::SetLogger(nullptr);
-}
-```
-
-The severity of internal messages is represented by `cpphttp::LogSeverity`:
-- `cpphttp::LogSeverity::Info`
-- `cpphttp::LogSeverity::Warning`
-- `cpphttp::LogSeverity::Error`
+- `cpphttp::qpack`: `Encode`, `Decode`, `EncodeInteger`, `DecodeInteger`, `EncodeString`, `DecodeString`, `DecodeHuffman`, `GetStaticTable`.
+- `cpphttp::http3`: `EncodeVarint`, `DecodeVarint`, `EncodeFrame`, `GetSettingsPayload`, `ReconstructHttp11Request`, `ReconstructHttp11Response`, `ParseHttp11Response`.
 
 ---
-[< Previous: Basic Usage](./basic-usage.html) | [🏠 Home](./) | [Next: Performance & Tuning >](./performance-metrics.html)
+
+## Limits and DoS Protection
+
+All three of `HttpServerImpl`, `HttpClientImpl`, and `WebSocketClient` enforce strict size, timeout, and framing checks by default.
+
+### Default Limits Reference
+
+| Component | Setter / Getter | Default | Behavior on Violation |
+| :--- | :--- | :--- | :--- |
+| `HttpServerImpl` | `SetMaxHeaderSize` / `GetMaxHeaderSize` | `8192` bytes (8 KB) | Sends `431 Request Header Fields Too Large` + closes connection |
+| `HttpServerImpl` | `SetMaxBodySize` / `GetMaxBodySize` | `10 * 1024 * 1024` (10 MB) | Sends `413 Payload Too Large` + closes connection (closes QUIC conn on H3) |
+| `HttpServerImpl` | `SetIdleTimeout` / `GetIdleTimeout` | `10ms` | Wait interval on `background_thread_` event loop when idle |
+| `HttpServerImpl` | `SetSendChunkSize` / `SetMaxOutboundBufferSize` | Transport defaults (`64 KB` / `10 MB` TCP, `1 MB` QUIC) | Controls outbound chunk size and backpressure threshold |
+| `HttpClientImpl` | `SetTimeout` / `GetTimeout` | `10000ms` (10 s) | Throws `std::runtime_error` on connect or response timeout |
+| `HttpClientImpl` | `SetMaxHeaderSize` / `GetMaxHeaderSize` | `8192` bytes (8 KB) | Logs error and aborts connection |
+| `HttpClientImpl` | `SetMaxBodySize` / `GetMaxBodySize` | `10 * 1024 * 1024` (10 MB) | Aborts oversized buffered/decompressed responses |
+| `HttpClientImpl` | `SetMaxRedirects` / `GetMaxRedirects` | `5` | Throws `std::runtime_error("Too many redirects")` |
+| `WebSocketClient` | `SetMaxBodySize` / `GetMaxBodySize` | `10 * 1024 * 1024` (10 MB) | Closes with `1009 Message too big` |
+| `WebSocketClient` | `SetMaxOutboundBufferSize` / `GetMaxOutboundBufferSize` | `10 * 1024 * 1024` (10 MB) | Caps `cpptcpnet::TcpClient` outbound queue |
+| `WebSocketClient` | `SetCloseTimeout` / `GetCloseTimeout` | `1000ms` (1 s) | Max wait for peer close frame on `Close(1000)` |
+
+The HTTP/1.1 parser also strictly rejects request smuggling vectors: duplicate `Content-Length` headers, non-digit `Content-Length` values (`ParseContentLength`), header names containing whitespace, non-`chunked` or multi-valued `Transfer-Encoding`, invalid chunk size lines (`ParseChunkSizeLine`), and `CR`/`LF` injection in serialized headers or HTTP/3 pseudo-headers.
+
+---
+
+## Multi-Threaded Safety and Logging
+
+### Thread-Safe Handlers and Client Worker Pool
+
+- **Server:** `HttpServer` processes connections on `cpptcpnet`'s session-affinity worker pool (`session_id % num_workers`). Packets for one TCP connection are always serialized on its assigned worker thread, while different connections run concurrently across CPU cores. Always protect shared mutable state (maps, counters, DB handles) with `std::mutex` or `std::atomic`.
+- **Client:** `HttpClient` serializes concurrent synchronous calls on the same instance with `request_mutex_`. Asynchronous calls (`GetAsync`, `PostAsync`, `PutAsync`, `DeleteAsync`, `PostStreamAsync`, `PutStreamAsync`) run on a shared global `cppasyncworker::WorkerPool` (size configurable via `cpphttp::SetClientWorkerPoolSize(size_t)`, defaulting to `std::thread::hardware_concurrency()`, minimum `4` when `<= 1`), or a custom pool passed to the `HttpClient` constructor.
+
+### Version and Internal Library Logging
+
+Query the library version with `cpphttp::version()` (returns `"MAJOR.MINOR.PATCH"`, e.g. `"1.12.0"`).
+
+Internal diagnostics from `HttpClient`, `WebSocketClient`, and `QuicServerTransport` are silent by default. Register a global callback via `cpphttp::SetLogger`:
+
+```cpp
+cpphttp::SetLogger([](cpphttp::LogSeverity severity,
+                      const std::string& className,
+                      const std::string& message) {
+    const char* level = "INFO";
+    if (severity == cpphttp::LogSeverity::Warning) level = "WARNING";
+    if (severity == cpphttp::LogSeverity::Error) level = "ERROR";
+    std::cout << "[HTTP-LIB][" << level << "][" << className << "] "
+              << message << "\n";
+});
+
+// Pass nullptr to disable logging
+cpphttp::SetLogger(nullptr);
+```
+
+`cpphttp::LogSeverity` values are `Info`, `Warning`, and `Error`.
+
+---
+
+## TCP Defragmentation and Pipelining
+
+TCP delivers an unstructured byte stream where HTTP requests may arrive split across multiple `recv` events (fragmentation) or coalesced back-to-back in a single buffer (HTTP pipelining):
+
+1. **Fragmentation Protection:** `HttpServerImpl` appends incoming bytes into a per-session `std::deque<uint8_t>` (`SessionState::buffer`) and searches for `\r\n\r\n`. Until the complete headers and either `Content-Length` bytes or the terminating `0\r\n\r\n` chunk arrive, routing is deferred while waiting for subsequent packets.
+2. **Pipelining Support:** After dispatching a request and sending the response, the server erases only `[0, body_start_idx + consumed_body_bytes)` from `session->buffer` and loops, immediately processing any subsequent pipelined requests already buffered. If the connection is closing (`Connection: close`, HTTP/1.0 without `keep-alive`, or early stream abort), `discard_input` is set and buffered tail bytes are discarded.
+3. **Client Framing Resilience:** `HttpClientImpl::ReadResponse` automatically discards `1xx` interim responses (such as `100 Continue` and `103 Early Hints`) before parsing the final response, and supports HTTP/1.0 EOF-delimited bodies when both `Content-Length` and `Transfer-Encoding` are absent.
+
+---
+
+<div class="page-nav">
+  <a href="./basic-usage.html" class="page-nav-link">
+    <span class="page-nav-subtitle">Previous Section</span>
+    <span class="page-nav-title">&larr; Basic Usage</span>
+  </a>
+  <a href="./architecture-and-examples.html" class="page-nav-link page-nav-next">
+    <span class="page-nav-subtitle">Next Section</span>
+    <span class="page-nav-title">Architecture & Examples &rarr;</span>
+  </a>
+</div>
