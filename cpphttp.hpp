@@ -42,7 +42,7 @@
 namespace cpphttp {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 12;
+constexpr int VERSION_MINOR = 13;
 constexpr int VERSION_PATCH = 0;
 
 /**

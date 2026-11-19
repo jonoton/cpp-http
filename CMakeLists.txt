@@ -30,7 +30,6 @@ FetchContent_MakeAvailable(cpptcpnet)
 
 option(CPPHTTP_ENABLE_QUIC "Enable HTTP over QUIC using cpp-quic" ON)
 if(CPPHTTP_ENABLE_QUIC)
-    add_compile_definitions(CPPHTTP_ENABLE_QUIC)
     set(CPPHTTP_QUIC_TAG "main" CACHE STRING "Git tag/branch to use for cpp-quic dependency")
     FetchContent_Declare(
       cppquic
@@ -117,6 +116,8 @@ target_compile_features(cpphttp INTERFACE cxx_std_17)
 
 target_link_libraries(cpphttp INTERFACE cpptcpnet::cpptcpnet ZLIB::ZLIB)
 if(CPPHTTP_ENABLE_QUIC)
+    # INTERFACE so consumers linking cpphttp::cpphttp see the QUIC APIs too
+    target_compile_definitions(cpphttp INTERFACE CPPHTTP_ENABLE_QUIC)
     target_link_libraries(cpphttp INTERFACE cppquic::cppquic)
 endif()
 

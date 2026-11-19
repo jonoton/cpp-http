@@ -663,7 +663,7 @@ The HTTP/1.1 parser also strictly rejects request smuggling vectors: duplicate `
 
 ### Version and Internal Library Logging
 
-Query the library version with `cpphttp::version()` (returns `"MAJOR.MINOR.PATCH"`, e.g. `"1.12.0"`).
+Query the library version with `cpphttp::version()` (returns `"MAJOR.MINOR.PATCH"`, e.g. `"1.13.0"`).
 
 Internal diagnostics from `HttpClient`, `WebSocketClient`, and `QuicServerTransport` are silent by default. Register a global callback via `cpphttp::SetLogger`:
 
